@@ -32,6 +32,7 @@ from routers.batches_router import batches_router
 from routers.files_router import files_router
 from routers.main_router import main_router
 from routers.metrics_router import metrics_router
+from routers.domain_registration_router import domain_registration_router
 from routers.routing_logic import (
     get_routing_logic,
     initialize_routing_logic,
@@ -43,6 +44,12 @@ from service_discovery import (
 )
 from services.batch_service import initialize_batch_processor
 from services.callbacks_service.callbacks import configure_custom_callbacks
+from services.domain_registration_service import (
+    initialize_domain_registration_service,
+    cleanup_domain_registration_service,
+    set_domain_registration_service,
+    DomainRegistrationService,
+)
 from services.files_service import initialize_storage
 from services.request_service.rewriter import (
     get_request_rewriter,
@@ -93,7 +100,24 @@ async def lifespan(app: FastAPI):
 
     app.state.event_loop = asyncio.get_event_loop()
 
+    # Initialize domain registration service
+    logger.info("Initializing domain registration service")
+    domain_service = DomainRegistrationService()
+    set_domain_registration_service(domain_service)
+    domain_init_success = await initialize_domain_registration_service()
+    if domain_init_success:
+        logger.info("Domain registration service initialized successfully")
+    else:
+        logger.warning(
+            "Domain registration service initialization failed, continuing without it"
+        )
+
     yield
+
+    # Cleanup domain registration service
+    logger.info("Cleaning up domain registration service")
+    await cleanup_domain_registration_service()
+
     await app.state.aiohttp_client_wrapper.stop()
 
     # Close the threaded-components
@@ -231,6 +255,7 @@ app.include_router(main_router)
 app.include_router(files_router)
 app.include_router(batches_router)
 app.include_router(metrics_router)
+app.include_router(domain_registration_router)
 app.state.aiohttp_client_wrapper = AiohttpClientWrapper()
 app.state.semantic_cache_available = semantic_cache_available
 

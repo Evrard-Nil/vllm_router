@@ -4,12 +4,21 @@ FROM vllm/vllm-openai@sha256:014a95f21c9edf6abe0aea6b07353f96baa4ec291c427bb1176
 # Install dependencies
 WORKDIR /tmp
 
+# Install system dependencies for domain registration
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install packages via requirements.txt instead of poetry
 # because of nv-ppcie-verifier requires some old version packages,
 # which is not compatible with lots of current dependencies.
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade -r requirements.txt \
     && rm -rf requirements.txt
+
+# Create directories for certificates and evidence
+RUN mkdir -p /etc/letsencrypt /evidences \
+    && chmod 700 /etc/letsencrypt /evidences
 
 # Copy source code
 WORKDIR /app
