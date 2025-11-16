@@ -17,8 +17,17 @@ from fastapi import (
     APIRouter,
     BackgroundTasks,
     Request,
+    HTTPException,
+    Query,
 )
 from fastapi.responses import JSONResponse, Response
+from quote.quote import (
+    ECDSA,
+    ED25519,
+    ecdsa_context,
+    ed25519_context,
+    generate_attestation,
+)
 
 from dynamic_config import get_dynamic_config_watcher
 from log import init_logger
@@ -244,3 +253,47 @@ async def route_v1_audio_transcriptions(
     return await route_general_transcriptions(
         request, "/v1/audio/transcriptions", background_tasks
     )
+
+
+@main_router.get("/v1/attestation/report")
+async def attestation_report(
+    request: Request,
+    signing_algo: str | None = None,
+    nonce: str | None = Query(None),
+    signing_address: str | None = Query(None),
+):
+    """
+    Get attestation report of intel quote and nvidia payload.
+
+    Args:
+        request: The FastAPI request object
+        signing_algo: The signing algorithm to use (ecdsa or ed25519). Defaults to ecdsa
+        nonce: Optional nonce for the attestation. If not provided, a random one will be generated
+        signing_address: Optional signing address to filter by. If provided, must match this server's address
+
+    Returns:
+        JSON response containing the attestation report
+
+    Raises:
+        HTTPException: If signing algorithm is invalid or signing address doesn't match
+    """
+    signing_algo = ECDSA if signing_algo is None else signing_algo
+    if signing_algo not in [ECDSA, ED25519]:
+        raise HTTPException(status_code=400, detail="Invalid signing algorithm")
+
+    context = ecdsa_context if signing_algo == ECDSA else ed25519_context
+
+    # If signing_address is specified and doesn't match this server's address, return 404
+    if signing_address and context.signing_address.lower() != signing_address.lower():
+        raise HTTPException(
+            status_code=404, detail="Signing address not found on this server"
+        )
+
+    try:
+        attestation = generate_attestation(context, nonce)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    resp = dict(attestation)
+    resp["all_attestations"] = [attestation]
+    return resp
