@@ -146,6 +146,25 @@ def sign_message(context: SigningContext, content: str) -> str:
     return context.sign(content)
 
 
+def sign_chat(text: str) -> dict:
+    """
+    Create a signed chat data structure with both ECDSA and ED25519 signatures.
+
+    Args:
+        text: The text to sign (typically request_hash:response_hash)
+
+    Returns:
+        Dictionary containing both signatures and their corresponding signing addresses
+    """
+    return dict(
+        text=text,
+        signature_ecdsa=sign_message(ecdsa_context, text),
+        signing_address_ecdsa=ecdsa_context.signing_address,
+        signature_ed25519=sign_message(ed25519_context, text),
+        signing_address_ed25519=ed25519_context.signing_address,
+    )
+
+
 def generate_attestation(
     context: SigningContext, nonce: Optional[bytes | str] = None
 ) -> dict:
@@ -181,6 +200,7 @@ def generate_attestation(
 __all__ = [
     "SigningContext",
     "sign_message",
+    "sign_chat",
     "generate_attestation",
     "ecdsa_context",
     "ed25519_context",

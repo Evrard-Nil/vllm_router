@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+from hashlib import sha256
+from typing import Optional
 
 from fastapi import (
     APIRouter,
@@ -19,15 +21,18 @@ from fastapi import (
     Request,
     HTTPException,
     Query,
+    Header,
 )
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from quote.quote import (
     ECDSA,
     ED25519,
     ecdsa_context,
     ed25519_context,
     generate_attestation,
+    sign_chat,
 )
+from cache.cache import set_chat, get_chat
 
 from dynamic_config import get_dynamic_config_watcher
 from log import init_logger
@@ -56,8 +61,101 @@ main_router = APIRouter()
 logger = init_logger(__name__)
 
 
+async def route_general_request_with_signing(
+    request: Request,
+    endpoint: str,
+    background_tasks: BackgroundTasks,
+    x_request_hash: Optional[str] = None,
+):
+    """
+    Route the incoming request to the backend server with signing functionality.
+
+    This function extends the basic request routing to include:
+    - Request hash calculation
+    - Response signing and caching
+    - Support for both streaming and non-streaming responses
+    """
+    # Calculate request hash
+    request_body = await request.body()
+    if x_request_hash:
+        request_sha256 = x_request_hash
+        logger.info(f"Using client-provided request hash: {request_sha256}")
+    else:
+        request_sha256 = sha256(request_body).hexdigest()
+        logger.debug(f"Calculated request hash: {request_sha256}")
+
+    # Check if this is a streaming request
+    try:
+        request_json = json.loads(request_body)
+        is_streaming = request_json.get("stream", False)
+    except json.JSONDecodeError:
+        is_streaming = False
+
+    if is_streaming:
+        return await route_streaming_request_with_signing(
+            request, endpoint, background_tasks, request_sha256, request_body
+        )
+    else:
+        return await route_non_streaming_request_with_signing(
+            request, endpoint, background_tasks, request_sha256, request_body
+        )
+
+
+async def route_streaming_request_with_signing(
+    request: Request,
+    endpoint: str,
+    background_tasks: BackgroundTasks,
+    request_sha256: str,
+    request_body: bytes,
+):
+    """Handle streaming requests with signing."""
+    # For now, use the original routing without signing for streaming
+    # TODO: Implement proper streaming response signing
+    logger.warning(
+        "Streaming response signing not yet implemented, using original routing"
+    )
+    return await route_general_request(request, endpoint, background_tasks)
+
+
+async def route_non_streaming_request_with_signing(
+    request: Request,
+    endpoint: str,
+    background_tasks: BackgroundTasks,
+    request_sha256: str,
+    request_body: bytes,
+):
+    """Handle non-streaming requests with signing."""
+    # Get the original response
+    original_response = await route_general_request(request, endpoint, background_tasks)
+
+    # Extract chat_id and sign the response
+    if hasattr(original_response, "body") and original_response.body:
+        try:
+            # Convert body to string if it's bytes
+            body_str = original_response.body
+            if isinstance(body_str, bytes):
+                body_str = body_str.decode("utf-8")
+
+            response_data = json.loads(body_str)
+            chat_id = response_data.get("id")
+
+            if chat_id:
+                response_sha256 = sha256(body_str.encode()).hexdigest()
+                signed_data = sign_chat(f"{request_sha256}:{response_sha256}")
+                set_chat(chat_id, json.dumps(signed_data))
+                logger.info(f"Cached signature for non-streaming chat_id: {chat_id}")
+        except (json.JSONDecodeError, AttributeError, UnicodeDecodeError):
+            logger.warning("Failed to parse response for signing")
+
+    return original_response
+
+
 @main_router.post("/v1/chat/completions")
-async def route_chat_completion(request: Request, background_tasks: BackgroundTasks):
+async def route_chat_completion(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_request_hash: Optional[str] = Header(None, alias="X-Request-Hash"),
+):
     if semantic_cache_available:
         # Check if the request can be served from the semantic cache
         logger.debug("Received chat completion request, checking semantic cache")
@@ -68,14 +166,20 @@ async def route_chat_completion(request: Request, background_tasks: BackgroundTa
             return cache_response
 
     logger.debug("No cache hit, forwarding request to backend")
-    return await route_general_request(
-        request, "/v1/chat/completions", background_tasks
+    return await route_general_request_with_signing(
+        request, "/v1/chat/completions", background_tasks, x_request_hash
     )
 
 
 @main_router.post("/v1/completions")
-async def route_completion(request: Request, background_tasks: BackgroundTasks):
-    return await route_general_request(request, "/v1/completions", background_tasks)
+async def route_completion(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_request_hash: Optional[str] = Header(None, alias="X-Request-Hash"),
+):
+    return await route_general_request_with_signing(
+        request, "/v1/completions", background_tasks, x_request_hash
+    )
 
 
 @main_router.post("/v1/embeddings")
@@ -252,6 +356,56 @@ async def route_v1_audio_transcriptions(
     """Handles audio transcription requests."""
     return await route_general_transcriptions(
         request, "/v1/audio/transcriptions", background_tasks
+    )
+
+
+@main_router.get("/v1/signature/{chat_id}")
+async def get_signature(
+    request: Request, chat_id: str, signing_algo: Optional[str] = None
+):
+    """
+    Get signature for chat_id of chat history.
+
+    Args:
+        request: The FastAPI request object
+        chat_id: The chat ID to retrieve signature for
+        signing_algo: Optional signing algorithm filter (ecdsa or ed25519)
+
+    Returns:
+        JSON response containing the signature data
+
+    Raises:
+        HTTPException: If chat_id is not found or signing algorithm is invalid
+    """
+    cache_value = get_chat(chat_id)
+    if cache_value is None:
+        raise HTTPException(status_code=404, detail="Chat id not found or expired")
+
+    signature = None
+    signing_algo = ECDSA if signing_algo is None else signing_algo
+
+    # Retrieve the cached request and response
+    try:
+        value = json.loads(cache_value)
+    except Exception as e:
+        logger.error(f"Failed to parse the cache value: {cache_value} {e}")
+        raise HTTPException(status_code=500, detail="Failed to parse the cache value")
+
+    signing_address = None
+    if signing_algo == ECDSA:
+        signature = value.get("signature_ecdsa")
+        signing_address = value.get("signing_address_ecdsa")
+    elif signing_algo == ED25519:
+        signature = value.get("signature_ed25519")
+        signing_address = value.get("signing_address_ed25519")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid signing algorithm")
+
+    return dict(
+        text=value.get("text"),
+        signature=signature,
+        signing_address=signing_address,
+        signing_algo=signing_algo,
     )
 
 
