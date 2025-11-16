@@ -24,6 +24,8 @@ from typing import Dict, List, Optional
 import requests
 from fastapi import Request
 
+from service_discovery import BackendType, EndpointInfo
+
 try:
     from transformers import AutoTokenizer
 except ImportError:
@@ -80,6 +82,51 @@ class RoutingInterface(metaclass=SingletonABCMeta):
                 lowest_qps = request_stat.qps
                 ret = url
         return ret
+
+    def _prefer_vllm_backends(
+        self, endpoints: List[EndpointInfo]
+    ) -> List[EndpointInfo]:
+        """
+        Return endpoints as-is since they are already ordered by preference
+        during discovery (VLLM first, then routers).
+
+        Args:
+            endpoints (List[EndpointInfo]): The list of endpoints
+
+        Returns:
+            List[EndpointInfo]: Endpoints in their pre-ordered preference
+        """
+        # Endpoints are already ordered by preference during discovery
+        # No need to sort at routing time for better performance
+        vllm_count = sum(1 for e in endpoints if e.backend_type == BackendType.VLLM)
+        router_count = sum(1 for e in endpoints if e.backend_type == BackendType.ROUTER)
+
+        logger.debug(
+            f"Using pre-ordered endpoints: {vllm_count} VLLM backends, {router_count} router backends"
+        )
+
+        return endpoints
+
+    def _check_loop_prevention(self, request: Request) -> bool:
+        """
+        Check if the request has exceeded the maximum hop count to prevent infinite loops.
+
+        Args:
+            request (Request): The incoming request
+
+        Returns:
+            bool: True if routing should continue, False if loop detected
+        """
+        max_hops = 3  # Maximum allowed hops
+        current_hops = int(request.headers.get("X-Router-Hops", "0"))
+
+        if current_hops >= max_hops:
+            logger.warning(
+                f"Loop detected: request has exceeded maximum hops ({max_hops})"
+            )
+            return False
+
+        return True
 
     def _update_hash_ring(self, endpoints: List["EndpointInfo"]):
         """
@@ -155,7 +202,7 @@ class RoundRobinRouter(RoutingInterface):
     ) -> str:
         """
         Route the request to the appropriate engine URL using a simple
-        round-robin algorithm
+        round-robin algorithm with VLLM backend preference and loop prevention
 
         Args:
             endpoints (List[EndpointInfo]): The list of engine URLs
@@ -165,15 +212,30 @@ class RoundRobinRouter(RoutingInterface):
                 indicating the request-level performance of each engine
             request (Request): The incoming request
         """
-        endpoints_id = id(endpoints)
+        # Check for loop prevention
+        if not self._check_loop_prevention(request):
+            raise Exception("Routing loop detected - maximum hops exceeded")
+
+        # Apply VLLM backend preference
+        preferred_endpoints = self._prefer_vllm_backends(endpoints)
+
+        if not preferred_endpoints:
+            raise Exception("No available endpoints for routing")
+
+        endpoints_id = id(preferred_endpoints)
         if endpoints_id != self.last_endpoints_id:
-            current_hash = hash(tuple(e.url for e in endpoints))
+            current_hash = hash(tuple(e.url for e in preferred_endpoints))
             if current_hash != self.last_endpoints_hash:
-                self.sorted_endpoints = sorted(endpoints, key=lambda e: e.url)
+                self.sorted_endpoints = sorted(preferred_endpoints, key=lambda e: e.url)
                 self.last_endpoints_hash = current_hash
             self.last_endpoints_id = endpoints_id
+
         chosen = self.sorted_endpoints[self.req_id % len(self.sorted_endpoints)]
         self.req_id += 1
+
+        logger.debug(
+            f"RoundRobinRouter selected {chosen.url} (backend_type: {chosen.backend_type})"
+        )
         return chosen.url
 
 

@@ -30,6 +30,15 @@ from log import init_logger
 
 logger = init_logger(__name__)
 
+
+class BackendType(str, enum.Enum):
+    """Enumeration for different types of backends."""
+
+    VLLM = "vllm"
+    ROUTER = "router"
+    AUTO_DETECT = "auto"  # For backward compatibility
+
+
 _global_service_discovery: "Optional[ServiceDiscovery]" = None
 
 
@@ -97,6 +106,9 @@ class EndpointInfo:
     # Endpoint's sleep status
     sleep: bool
 
+    # Backend type (vllm, router, or auto_detect)
+    backend_type: BackendType = BackendType.AUTO_DETECT
+
     # Pod name
     pod_name: Optional[str] = None
 
@@ -107,7 +119,7 @@ class EndpointInfo:
     namespace: Optional[str] = None
 
     # Model information including relationships
-    model_info: Dict[str, ModelInfo] = None
+    model_info: Optional[Dict[str, ModelInfo]] = None
 
     def __str__(self):
         return f"EndpointInfo(url={self.url}, model_names={self.model_names}, added_timestamp={self.added_timestamp}, model_label={self.model_label}, service_name={self.service_name},pod_name={self.pod_name}, namespace={self.namespace})"
@@ -235,8 +247,9 @@ class StaticServiceDiscovery(ServiceDiscovery):
     def get_unhealthy_endpoint_hashes(self) -> list[str]:
         unhealthy_endpoints = []
         try:
+            model_types = self.model_types or ["chat"] * len(self.urls)
             for url, model, model_type in zip(
-                self.urls, self.models, self.model_types, strict=True
+                self.urls, self.models, model_types, strict=True
             ):
                 if utils.is_model_healthy(url, model, model_type):
                     logger.debug(f"{model} at {url} is healthy")
@@ -515,10 +528,20 @@ class BackendListServiceDiscovery(ServiceDiscovery):
                 logger.error(f"Error processing backend {backend_url}: {e}")
                 continue
 
-        # Update available engines
+        # Update available engines with VLLM-first ordering
         with self.available_engines_lock:
             self.available_engines.clear()
+
+            # Separate VLLM and router backends for preferential ordering
+            vllm_engines = {}
+            router_engines = {}
+
             for engine_key, engine_data in new_engines.items():
+                # Detect backend type
+                backend_type = detect_backend_type(
+                    engine_data["url"], self.health_check_timeout_seconds
+                )
+
                 endpoint_info = EndpointInfo(
                     url=engine_data["url"],
                     model_names=engine_data["model_names"],
@@ -526,11 +549,25 @@ class BackendListServiceDiscovery(ServiceDiscovery):
                     Id=str(uuid.uuid5(uuid.NAMESPACE_DNS, engine_key)),
                     model_label="default",
                     sleep=False,
+                    backend_type=backend_type,
                     model_info=engine_data["model_info"],
                 )
-                self.available_engines[engine_key] = endpoint_info
 
-        logger.info(f"Updated {len(self.available_engines)} engines from backend list")
+                # Store in appropriate list for VLLM-first ordering
+                if backend_type == BackendType.VLLM:
+                    vllm_engines[engine_key] = endpoint_info
+                elif backend_type == BackendType.ROUTER:
+                    router_engines[engine_key] = endpoint_info
+                else:  # AUTO_DETECT - treat as VLLM
+                    vllm_engines[engine_key] = endpoint_info
+
+            # Add engines in VLLM-first order (VLLM engines first, then router engines)
+            self.available_engines.update(vllm_engines)
+            self.available_engines.update(router_engines)
+
+        logger.info(
+            f"Updated {len(self.available_engines)} engines from backend list (VLLM-first ordering)"
+        )
 
     def _refresh_worker(self) -> None:
         """
@@ -896,6 +933,73 @@ def reconfigure_service_discovery(
     _global_service_discovery.close()
     _global_service_discovery = new_service_discovery
     return _global_service_discovery
+
+
+def detect_backend_type(backend_url: str, timeout: int = 10) -> BackendType:
+    """
+    Detect the type of backend by checking its endpoints and responses.
+
+    Args:
+        backend_url: The URL of the backend to detect
+        timeout: Timeout for detection requests
+
+    Returns:
+        BackendType: The detected backend type
+    """
+    try:
+        # Ensure backend URL has protocol
+        if not backend_url.startswith(("http://", "https://")):
+            backend_url = f"http://{backend_url}"
+
+        headers = None
+        if VLLM_API_KEY := os.getenv("VLLM_API_KEY"):
+            headers = {"Authorization": f"Bearer {VLLM_API_KEY}"}
+
+        # Check health endpoint - routers typically have router-specific health responses
+        try:
+            health_url = f"{backend_url}/health"
+            response = requests.get(health_url, headers=headers, timeout=timeout)
+            if response.status_code == 200:
+                health_data = response.json()
+                # Check if health response contains router-specific fields
+                if "dynamic_config" in health_data or "status" in health_data:
+                    logger.debug(
+                        f"Detected router backend at {backend_url} (health endpoint)"
+                    )
+                    return BackendType.ROUTER
+        except Exception:
+            pass  # Health endpoint might not exist, continue with other detection methods
+
+        # Check models endpoint for router-specific patterns
+        try:
+            models_url = f"{backend_url}/v1/models"
+            response = requests.get(models_url, headers=headers, timeout=timeout)
+            if response.status_code == 200:
+                models_data = response.json()
+                # Routers might have different model patterns or additional metadata
+                if "data" in models_data and isinstance(models_data["data"], list):
+                    # Check for router-specific model patterns
+                    models = models_data["data"]
+                    if len(models) > 0:
+                        # Routers often aggregate models from multiple backends
+                        # and might have consistent model patterns
+                        model_ids = [model.get("id", "") for model in models]
+                        # If we see many different models or specific patterns, it might be a router
+                        if len(model_ids) > 5:  # Arbitrary threshold for "many models"
+                            logger.debug(
+                                f"Detected router backend at {backend_url} (many models)"
+                            )
+                            return BackendType.ROUTER
+        except Exception:
+            pass
+
+        # Default to VLLM if no router indicators found
+        logger.debug(f"Detected VLLM backend at {backend_url} (default)")
+        return BackendType.VLLM
+
+    except Exception as e:
+        logger.warning(f"Failed to detect backend type for {backend_url}: {e}")
+        return BackendType.VLLM  # Default to VLLM on error
 
 
 def get_service_discovery() -> ServiceDiscovery:

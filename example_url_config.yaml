@@ -3,8 +3,12 @@
 # Models are automatically discovered by using the v1/models endpoint of the backends.
 
 # Required: List of backend URLs
-backends:
+vllm_backends:
   - "http://localhost:8000"
+
+# Other vllm routers to forward requests to if no vLLM backends are available
+router_backends:
+  - "http://localhost:8002"
 
 # Optional: Basic server settings
 host: "0.0.0.0"

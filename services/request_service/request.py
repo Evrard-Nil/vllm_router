@@ -107,10 +107,14 @@ async def process_request(
         # If we can't parse the body as JSON, assume it's not streaming
         raise HTTPException(status=400, detail="Request body is not JSON parsable.")
 
-    # sanitize the request headers
+    # sanitize the request headers and add hop counting
     headers = {
         k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS
     }
+
+    # Add hop counting for loop prevention
+    current_hops = int(request.headers.get("X-Router-Hops", "0"))
+    headers["X-Router-Hops"] = str(current_hops + 1)
 
     # For non-streaming requests, collect the full response to cache it properly
     full_response = bytearray()
