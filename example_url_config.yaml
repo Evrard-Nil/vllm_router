@@ -1,0 +1,45 @@
+# Example configuration for URL-based service discovery
+# This shows how to configure the vLLM router to use a URL-based discovery system
+
+# Required: Service discovery type
+service_discovery: "url"
+
+# Required: URL to fetch model and endpoint information from
+# This URL should return a JSON response with the format:
+# {
+#   "model-name": {
+#     "count": 2,
+#     "endpoints": ["host1:port1", "host2:port2"]
+#   }
+# }
+discovery_url: "http://discovery-service.example.com/models"
+
+# Optional: Refresh interval in seconds (default: 30)
+# How often to refresh the configuration from the discovery URL
+discovery_refresh_interval: 30
+
+# Optional: Backend health check timeout in seconds (default: 10)
+backend_health_check_timeout_seconds: 10
+
+# Optional: Model labels for prefill/decode endpoints
+# prefill_model_labels: "prefill"
+# decode_model_labels: "decode"
+
+# Required: Routing logic
+routing_logic: "roundrobin"
+
+# Optional: Session key for session-based routing
+# session_key: "X-Session-ID"
+
+# Optional: Callbacks for custom request handling
+# callbacks: "my_callbacks:callback_handler"
+
+# Optional: Feature gates
+# feature_gates: "SemanticCache=true"
+
+# Optional: Logging configuration
+log_level: "info"
+
+# Optional: Server configuration
+host: "0.0.0.0"
+port: 8001

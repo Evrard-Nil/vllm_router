@@ -157,19 +157,6 @@ def initialize_all(app: FastAPI, args):
             prefill_model_labels=args.prefill_model_labels,
             decode_model_labels=args.decode_model_labels,
         )
-    elif args.service_discovery == "k8s":
-        initialize_service_discovery(
-            ServiceDiscoveryType.K8S,
-            k8s_service_discovery_type=args.k8s_service_discovery_type,
-            app=app,
-            namespace=args.k8s_namespace,
-            port=args.k8s_port,
-            label_selector=args.k8s_label_selector,
-            prefill_model_labels=args.prefill_model_labels,
-            decode_model_labels=args.decode_model_labels,
-            watcher_timeout_seconds=args.k8s_watcher_timeout_seconds,
-            health_check_timeout_seconds=args.backend_health_check_timeout_seconds,
-        )
     elif args.service_discovery == "url":
         initialize_service_discovery(
             ServiceDiscoveryType.URL,
