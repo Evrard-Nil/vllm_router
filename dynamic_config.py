@@ -16,7 +16,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from fastapi import FastAPI
 
@@ -43,61 +43,46 @@ logger = init_logger(__name__)
 @dataclass
 class DynamicRouterConfig:
     """
-    Re-configurable configurations for the VLLM router.
+    Simplified configuration for the VLLM router.
+    Configuration is done through a YAML file with a list of backends.
+    Models are automatically discovered via the /v1/models endpoint.
     """
 
     # Required configurations
-    service_discovery: str
-    routing_logic: str
+    backends: List[str]
 
     # Optional configurations
-    # Service discovery configurations
-    static_backends: Optional[str] = None
-    static_models: Optional[str] = None
-    static_aliases: Optional[str] = None
-    static_model_labels: Optional[str] = None
-    static_model_types: Optional[str] = None
-    static_backend_health_checks: Optional[bool] = False
-    prefill_model_labels: Optional[str] = None
-    decode_model_labels: Optional[str] = None
-    discovery_url: Optional[str] = None
-    discovery_refresh_interval: Optional[int] = None
+    routing_logic: str = "roundrobin"
+    host: str = "0.0.0.0"
+    port: int = 8001
+    log_level: str = "info"
+    refresh_interval: int = 30
+    health_check_timeout_seconds: int = 10
 
-    # Routing logic configurations
+    # Advanced options (rarely used)
     session_key: Optional[str] = None
-
-    # Logging Options
     callbacks: Optional[str] = None
-
-    # Batch API configurations
-    # TODO (ApostaC): Support dynamic reconfiguration of batch API
-    # enable_batch_api: bool
-    # file_storage_class: str
-    # file_storage_path: str
-    # batch_processor: str
-
-    # Stats configurations
-    # TODO (ApostaC): Support dynamic reconfiguration of stats monitor
-    # engine_stats_interval: int
-    # request_stats_window: int
-    # log_stats: bool
-    # log_stats_interval: int
 
     @staticmethod
     def from_args(args) -> "DynamicRouterConfig":
+        # For simplified config, we expect backends to be provided
+        backends = getattr(args, "backends", [])
+        if not backends:
+            # Fallback to static backends for compatibility
+            backends = parse_static_urls(getattr(args, "static_backends", ""))
+
         return DynamicRouterConfig(
-            service_discovery=args.service_discovery,
-            static_backends=args.static_backends,
-            static_models=args.static_models,
-            static_model_types=args.static_model_types,
-            static_aliases=args.static_aliases,
-            discovery_url=args.discovery_url,
-            discovery_refresh_interval=args.discovery_refresh_interval,
-            # Routing logic configurations
-            routing_logic=args.routing_logic,
-            session_key=args.session_key,
-            # Logging Options
-            callbacks=args.callbacks,
+            backends=backends,
+            routing_logic=getattr(args, "routing_logic", "roundrobin"),
+            host=getattr(args, "host", "0.0.0.0"),
+            port=getattr(args, "port", 8001),
+            log_level=getattr(args, "log_level", "info"),
+            refresh_interval=getattr(args, "refresh_interval", 30),
+            health_check_timeout_seconds=getattr(
+                args, "health_check_timeout_seconds", 10
+            ),
+            session_key=getattr(args, "session_key", None),
+            callbacks=getattr(args, "callbacks", None),
         )
 
     @staticmethod
@@ -154,46 +139,15 @@ class DynamicConfigWatcher(metaclass=SingletonMeta):
 
     def reconfigure_service_discovery(self, config: DynamicRouterConfig):
         """
-        Reconfigures the router with the given config.
+        Reconfigures the router with the given config using the simplified backend list approach.
         """
-        if config.service_discovery == "static":
-            reconfigure_service_discovery(
-                ServiceDiscoveryType.STATIC,
-                app=self.app,
-                urls=parse_static_urls(config.static_backends),
-                models=parse_comma_separated_args(config.static_models),
-                aliases=(
-                    parse_static_aliases(config.static_aliases)
-                    if config.static_aliases
-                    else None
-                ),
-                model_labels=parse_comma_separated_args(config.static_model_labels),
-                model_types=parse_comma_separated_args(config.static_model_types),
-                static_backend_health_checks=config.static_backend_health_checks,
-                prefill_model_labels=parse_comma_separated_args(
-                    config.prefill_model_labels
-                ),
-                decode_model_labels=parse_comma_separated_args(
-                    config.decode_model_labels
-                ),
-            )
-        elif config.service_discovery == "url":
-            reconfigure_service_discovery(
-                ServiceDiscoveryType.URL,
-                app=self.app,
-                discovery_url=config.discovery_url,
-                refresh_interval=config.discovery_refresh_interval or 30,
-                prefill_model_labels=parse_comma_separated_args(
-                    config.prefill_model_labels
-                ),
-                decode_model_labels=parse_comma_separated_args(
-                    config.decode_model_labels
-                ),
-            )
-        else:
-            raise ValueError(
-                f"Invalid service discovery type: {config.service_discovery}"
-            )
+        reconfigure_service_discovery(
+            ServiceDiscoveryType.BACKEND_LIST,
+            app=self.app,
+            backends=config.backends,
+            refresh_interval=config.refresh_interval,
+            health_check_timeout_seconds=config.health_check_timeout_seconds,
+        )
 
         logger.info("DynamicConfigWatcher: Service discovery reconfiguration complete")
 
@@ -300,8 +254,8 @@ def initialize_dynamic_config_watcher(
     )
 
 
-def get_dynamic_config_watcher() -> DynamicConfigWatcher:
+def get_dynamic_config_watcher() -> Optional[DynamicConfigWatcher]:
     """
-    Returns the DynamicConfigWatcher singleton.
+    Returns the DynamicConfigWatcher singleton if it exists, None otherwise.
     """
     return DynamicConfigWatcher(_create=False)

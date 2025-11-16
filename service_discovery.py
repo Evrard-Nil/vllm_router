@@ -36,6 +36,7 @@ _global_service_discovery: "Optional[ServiceDiscovery]" = None
 class ServiceDiscoveryType(enum.Enum):
     STATIC = "static"
     URL = "url"
+    BACKEND_LIST = "backend_list"
 
 
 @dataclass
@@ -378,6 +379,212 @@ class StaticServiceDiscovery(ServiceDiscovery):
             self.loop.close()
 
 
+class BackendListServiceDiscovery(ServiceDiscovery):
+    def __init__(
+        self,
+        app,
+        backends: List[str],
+        refresh_interval: int = 30,
+        health_check_timeout_seconds: int = 10,
+    ):
+        """
+        Initialize the backend list service discovery module. This module
+        automatically discovers models from each backend's /v1/models endpoint.
+
+        Args:
+            app: the FastAPI application
+            backends: list of backend URLs
+            refresh_interval: the interval in seconds to refresh model discovery
+            health_check_timeout_seconds: timeout for health check requests
+        """
+        self.app = app
+        self.backends = backends
+        self.refresh_interval = refresh_interval
+        self.health_check_timeout_seconds = health_check_timeout_seconds
+        self.available_engines: Dict[str, EndpointInfo] = {}
+        self.available_engines_lock = threading.Lock()
+
+        # Start the refresh thread
+        self.running = True
+        self.refresh_thread = threading.Thread(target=self._refresh_worker, daemon=True)
+        self.refresh_thread.start()
+
+    def _fetch_models_from_backend(self, backend_url: str) -> Dict:
+        """
+        Fetch models from a backend's /v1/models endpoint.
+
+        Args:
+            backend_url: the URL of the backend
+
+        Returns:
+            Dictionary containing model information
+        """
+        try:
+            # Ensure backend URL has protocol
+            if not backend_url.startswith(("http://", "https://")):
+                models_url = f"http://{backend_url}/v1/models"
+            else:
+                models_url = f"{backend_url}/v1/models"
+
+            headers = None
+            if VLLM_API_KEY := os.getenv("VLLM_API_KEY"):
+                logger.info(
+                    f"Using vllm server authentication for backend {backend_url}"
+                )
+                headers = {"Authorization": f"Bearer {VLLM_API_KEY}"}
+
+            response = requests.get(
+                models_url,
+                headers=headers,
+                timeout=self.health_check_timeout_seconds,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            # Return the models data from the OpenAI API response
+            if "data" in data:
+                return {"models": data["data"]}
+            else:
+                logger.warning(f"Unexpected response format from {models_url}: {data}")
+                return {"models": []}
+
+        except Exception as e:
+            logger.error(f"Failed to fetch models from {backend_url}: {e}")
+            return {"models": []}
+
+    def _parse_model_info(self, model_data: Dict) -> ModelInfo:
+        """
+        Parse model information from OpenAI API response.
+
+        Args:
+            model_data: model data from the API response
+
+        Returns:
+            ModelInfo object
+        """
+        return ModelInfo.from_dict(model_data)
+
+    def _update_engines_from_backends(self) -> None:
+        """
+        Update the available engines by querying all backends for their models.
+        """
+        new_engines = {}
+
+        for backend_url in self.backends:
+            try:
+                # Fetch models from this backend
+                models_data = self._fetch_models_from_backend(backend_url)
+                models = models_data.get("models", [])
+
+                if not models:
+                    logger.warning(f"No models found on backend {backend_url}")
+                    continue
+
+                # Parse model information
+                model_names = []
+                model_info = {}
+
+                for model_data in models:
+                    if isinstance(model_data, dict) and "id" in model_data:
+                        model_id = model_data["id"]
+                        model_names.append(model_id)
+                        model_info[model_id] = self._parse_model_info(model_data)
+
+                # Create endpoint info for this backend
+                if model_names:
+                    # Use backend URL as unique key
+                    engine_key = backend_url
+
+                    # Ensure backend URL has protocol for endpoint info
+                    if not backend_url.startswith(("http://", "https://")):
+                        endpoint_url = f"http://{backend_url}"
+                    else:
+                        endpoint_url = backend_url
+
+                    new_engines[engine_key] = {
+                        "url": endpoint_url,
+                        "model_names": model_names,
+                        "model_info": model_info,
+                    }
+
+                    logger.info(
+                        f"Discovered {len(model_names)} models on backend {backend_url}: {model_names}"
+                    )
+
+            except Exception as e:
+                logger.error(f"Error processing backend {backend_url}: {e}")
+                continue
+
+        # Update available engines
+        with self.available_engines_lock:
+            self.available_engines.clear()
+            for engine_key, engine_data in new_engines.items():
+                endpoint_info = EndpointInfo(
+                    url=engine_data["url"],
+                    model_names=engine_data["model_names"],
+                    added_timestamp=int(time.time()),
+                    Id=str(uuid.uuid5(uuid.NAMESPACE_DNS, engine_key)),
+                    model_label="default",
+                    sleep=False,
+                    model_info=engine_data["model_info"],
+                )
+                self.available_engines[engine_key] = endpoint_info
+
+        logger.info(f"Updated {len(self.available_engines)} engines from backend list")
+
+    def _refresh_worker(self) -> None:
+        """
+        Worker thread that periodically refreshes model discovery from backends.
+        """
+        # Initial discovery
+        self._update_engines_from_backends()
+
+        while self.running:
+            try:
+                time.sleep(self.refresh_interval)
+                if not self.running:
+                    break
+
+                self._update_engines_from_backends()
+
+            except Exception as e:
+                logger.error(f"Error in refresh worker: {e}")
+
+    def get_endpoint_info(self) -> List[EndpointInfo]:
+        """
+        Get the URLs of the serving engines that are available for querying.
+
+        Returns:
+            a list of engine URLs
+        """
+        with self.available_engines_lock:
+            return list(self.available_engines.values())
+
+    def get_health(self) -> bool:
+        """
+        Check if the service discovery module is healthy.
+
+        Returns:
+            True if the service discovery module is healthy, False otherwise
+        """
+        return self.refresh_thread.is_alive()
+
+    def close(self) -> None:
+        """
+        Close the service discovery module.
+        """
+        self.running = False
+        if self.refresh_thread.is_alive():
+            self.refresh_thread.join(timeout=5.0)
+
+    async def initialize_client_sessions(self) -> None:
+        """
+        Initialize aiohttp ClientSession objects for prefill and decode endpoints.
+        This method is not used in the simplified backend list discovery.
+        """
+        pass
+
+
 class URLBasedServiceDiscovery(ServiceDiscovery):
     def __init__(
         self,
@@ -638,6 +845,8 @@ def _create_service_discovery(
         return StaticServiceDiscovery(*args, **kwargs)
     elif service_discovery_type == ServiceDiscoveryType.URL:
         return URLBasedServiceDiscovery(*args, **kwargs)
+    elif service_discovery_type == ServiceDiscoveryType.BACKEND_LIST:
+        return BackendListServiceDiscovery(*args, **kwargs)
     else:
         raise ValueError("Invalid service discovery type")
 

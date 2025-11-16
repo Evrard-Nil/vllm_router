@@ -121,7 +121,7 @@ def initialize_all(app: FastAPI, args):
         args: the parsed command-line arguments
 
     Raises:
-        ValueError: if the service discovery type is invalid
+        ValueError: if the configuration is invalid
     """
     if sentry_dsn := args.sentry_dsn:
         sentry_sdk.init(
@@ -132,81 +132,35 @@ def initialize_all(app: FastAPI, args):
             profile_session_sample_rate=args.sentry_profile_session_sample_rate,
         )
 
-    if args.service_discovery == "static":
-        initialize_service_discovery(
-            ServiceDiscoveryType.STATIC,
-            app=app,
-            urls=parse_static_urls(args.static_backends),
-            models=parse_comma_separated_args(args.static_models),
-            aliases=(
-                parse_static_aliases(args.static_aliases)
-                if args.static_aliases
-                else None
-            ),
-            model_types=(
-                parse_comma_separated_args(args.static_model_types)
-                if args.static_model_types
-                else None
-            ),
-            model_labels=(
-                parse_comma_separated_args(args.static_model_labels)
-                if args.static_model_labels
-                else None
-            ),
-            static_backend_health_checks=args.static_backend_health_checks,
-            prefill_model_labels=args.prefill_model_labels,
-            decode_model_labels=args.decode_model_labels,
-        )
-    elif args.service_discovery == "url":
-        initialize_service_discovery(
-            ServiceDiscoveryType.URL,
-            app=app,
-            discovery_url=args.discovery_url,
-            refresh_interval=args.discovery_refresh_interval,
-            prefill_model_labels=args.prefill_model_labels,
-            decode_model_labels=args.decode_model_labels,
-            health_check_timeout_seconds=args.backend_health_check_timeout_seconds,
-        )
+    # Use simplified configuration
+    config = args.config_obj
 
-    else:
-        raise ValueError(f"Invalid service discovery type: {args.service_discovery}")
+    # Initialize service discovery with backend list
+    initialize_service_discovery(
+        ServiceDiscoveryType.BACKEND_LIST,
+        app=app,
+        backends=config.backends,
+        refresh_interval=config.refresh_interval,
+        health_check_timeout_seconds=config.health_check_timeout_seconds,
+    )
 
     # Initialize singletons via custom functions.
-    initialize_engine_stats_scraper(args.engine_stats_interval)
-    initialize_request_stats_monitor(args.request_stats_window)
+    initialize_engine_stats_scraper(30)  # Default interval
+    initialize_request_stats_monitor(60)  # Default window
 
-    if args.enable_batch_api:
-        logger.info("Initializing batch API")
-        app.state.batch_storage = initialize_storage(
-            args.file_storage_class, args.file_storage_path
-        )
-        app.state.batch_processor = initialize_batch_processor(
-            args.batch_processor, args.file_storage_path, app.state.batch_storage
-        )
-
-    # Initialize dynamic config watcher
-    if args.dynamic_config_yaml or args.dynamic_config_json:
-        init_config = DynamicRouterConfig.from_args(args)
-        if args.dynamic_config_yaml:
-            initialize_dynamic_config_watcher(
-                args.dynamic_config_yaml, "YAML", 10, init_config, app
-            )
-        elif args.dynamic_config_json:
-            initialize_dynamic_config_watcher(
-                args.dynamic_config_json, "JSON", 10, init_config, app
-            )
-
-    if args.callbacks:
-        configure_custom_callbacks(args.callbacks, app)
-
+    # Initialize routing logic with simplified config
     initialize_routing_logic(
-        args.routing_logic,
-        session_key=args.session_key,
-        lmcache_controller_port=args.lmcache_controller_port,
-        prefill_model_labels=args.prefill_model_labels,
-        decode_model_labels=args.decode_model_labels,
-        kv_aware_threshold=args.kv_aware_threshold,
+        config.routing_logic,
+        session_key=config.session_key,
+        lmcache_controller_port=9000,  # Default port
+        prefill_model_labels=None,  # Not used in simplified config
+        decode_model_labels=None,  # Not used in simplified config
+        kv_aware_threshold=2000,  # Default threshold
     )
+
+    # Initialize callbacks if specified
+    if config.callbacks:
+        configure_custom_callbacks(config.callbacks, app)
 
     # Initialize feature gates
     initialize_feature_gates(args.feature_gates)
@@ -284,12 +238,16 @@ app.state.semantic_cache_available = semantic_cache_available
 def main():
     args = parse_args()
     initialize_all(app, args)
+
+    # Use config from the config object
+    config = args.config_obj
+
     if args.log_stats:
         threading.Thread(
             target=log_stats,
             args=(
                 app,
-                args.log_stats_interval,
+                getattr(args, "log_stats_interval", 10),  # Default interval
             ),
             daemon=True,
         ).start()
@@ -297,7 +255,7 @@ def main():
     # Workaround to avoid footguns where uvicorn drops requests with too
     # many concurrent requests active.
     set_ulimit()
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=config.host, port=config.port)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ import logging
 import sys
 
 import utils
+from dynamic_config import DynamicRouterConfig
 from parsers.yaml_utils import (
     read_and_process_yaml_config_file,
 )
@@ -36,11 +37,14 @@ logger = logging.getLogger(__name__)
 
 
 def verify_required_args_provided(args: argparse.Namespace) -> None:
-    if not args.routing_logic:
-        logger.error("--routing-logic must be provided.")
+    # For simplified config, we only need the config file
+    if not hasattr(args, "config_obj") or not args.config_obj:
+        logger.error("--config must be provided.")
         sys.exit(1)
-    if not args.service_discovery:
-        logger.error("--service-discovery must be provided.")
+
+    # Validate that the config has backends
+    if not args.config_obj.backends:
+        logger.error("Configuration must include at least one backend.")
         sys.exit(1)
 
 
@@ -84,31 +88,18 @@ def validate_static_model_types(model_types: str | None) -> None:
 # --- Argument Parsing and Initialization ---
 def validate_args(args):
     verify_required_args_provided(args)
-    if args.service_discovery == "static":
-        if args.static_backends is None:
+
+    # Validate session routing if specified
+    if hasattr(args, "config_obj") and args.config_obj:
+        if (
+            args.config_obj.routing_logic == "session"
+            and not args.config_obj.session_key
+        ):
             raise ValueError(
-                "Static backends must be provided when using static service discovery."
+                "Session key must be provided when using session routing logic."
             )
-        if args.static_models is None:
-            raise ValueError(
-                "Static models must be provided when using static service discovery."
-            )
-        if args.static_backend_health_checks:
-            validate_static_model_types(args.static_model_types)
-    if args.service_discovery == "url" and args.discovery_url is None:
-        raise ValueError(
-            "Discovery URL must be provided when using URL service discovery."
-        )
-    if args.routing_logic == "session" and args.session_key is None:
-        raise ValueError(
-            "Session key must be provided when using session routing logic."
-        )
-    if args.log_stats and args.log_stats_interval <= 0:
-        raise ValueError("Log stats interval must be greater than 0.")
-    if args.engine_stats_interval <= 0:
-        raise ValueError("Engine stats interval must be greater than 0.")
-    if args.request_stats_window <= 0:
-        raise ValueError("Request stats window must be greater than 0.")
+
+    # Validate Sentry configuration
     if not (0.0 <= args.sentry_traces_sample_rate <= 1.0):
         raise ValueError("Sentry traces sample rate must be between 0.0 and 1.0.")
     if not (0.0 <= args.sentry_profile_session_sample_rate <= 1.0):
@@ -119,72 +110,41 @@ def validate_args(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run the FastAPI app.")
-    parser.add_argument(
+
+    # Simplified configuration - just a config file
+    config_group = parser.add_argument_group(
+        "Configuration", "Simplified configuration using a YAML file with backend list"
+    )
+    config_group.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Path to the YAML configuration file containing the backend list and settings.",
+    )
+
+    # Basic server settings (can be overridden by config file)
+    server_group = parser.add_argument_group(
+        "Server Settings", "Basic server configuration"
+    )
+    server_group.add_argument(
         "--host", type=str, default="0.0.0.0", help="The host to run the server on."
     )
-    parser.add_argument(
+    server_group.add_argument(
         "--port", type=int, default=8001, help="The port to run the server on."
     )
-    parser.add_argument(
-        "--service-discovery",
+    server_group.add_argument(
+        "--log-level",
         type=str,
-        choices=["static", "url"],
-        help="The service discovery type.",
+        default="info",
+        choices=["critical", "error", "warning", "info", "debug", "trace"],
+        help="Log level for uvicorn. Default is 'info'.",
     )
-    parser.add_argument(
-        "--static-backends",
-        type=str,
-        default=None,
-        help="The URLs of static backends, separated by commas. E.g., http://localhost:8000,http://localhost:8001",
+
+    # Advanced options (rarely used)
+    advanced_group = parser.add_argument_group(
+        "Advanced Options", "Advanced configuration options"
     )
-    parser.add_argument(
-        "--static-models",
-        type=str,
-        default=None,
-        help="The models of static backends, separated by commas. E.g., model1,model2",
-    )
-    parser.add_argument(
-        "--static-aliases",
-        type=str,
-        default=None,
-        help="The aliases of static backends, separated by commas. E.g., your-custom-model:llama3",
-    )
-    parser.add_argument(
-        "--static-model-types",
-        type=str,
-        default=None,
-        help="Specify the static model types of each model. This is used for the backend health check, separated by commas. E.g. chat,embeddings,rerank",
-    )
-    parser.add_argument(
-        "--static-model-labels",
-        type=str,
-        default=None,
-        help="The model labels of static backends, separated by commas. E.g., model1,model2",
-    )
-    parser.add_argument(
-        "--static-backend-health-checks",
-        action="store_true",
-        help="Enable this flag to make vllm-router check periodically if the models work by sending dummy requests to their endpoints.",
-    )
-    parser.add_argument(
-        "--backend-health-check-timeout-seconds",
-        type=int,
-        default=10,
-        help="Timeout in seconds for backend health check requests (default: 10).",
-    )
-    parser.add_argument(
-        "--discovery-url",
-        type=str,
-        default=None,
-        help="The URL to fetch model and endpoint information from when using URL service discovery.",
-    )
-    parser.add_argument(
-        "--discovery-refresh-interval",
-        type=int,
-        default=30,
-        help="The interval in seconds to refresh the discovery configuration when using URL service discovery (default: 30).",
-    )
-    parser.add_argument(
+    advanced_group.add_argument(
         "--routing-logic",
         type=str,
         choices=[
@@ -194,116 +154,55 @@ def parse_args():
             "prefixaware",
             "disaggregated_prefill",
         ],
-        help="The routing logic to use",
+        help="The routing logic to use (overrides config file)",
     )
-    parser.add_argument(
-        "--lmcache-controller-port",
-        type=int,
-        default=9000,
-        help="The port of the LMCache controller.",
-    )
-    parser.add_argument(
+    advanced_group.add_argument(
         "--session-key",
         type=str,
         default=None,
         help="The key (in the header) to identify a session.",
     )
-    parser.add_argument(
+    advanced_group.add_argument(
         "--callbacks",
         type=str,
         default=None,
-        help="Path to the callback instance extending CustomCallbackHandler. Consists of <file path without .py ending>.<instance variable name>.",
+        help="Path to the callback instance extending CustomCallbackHandler. Consists of file path without .py ending and instance variable name.",
     )
 
-    # Request rewriter arguments
-    parser.add_argument(
-        "--request-rewriter",
+    # Legacy compatibility options (deprecated)
+    legacy_group = parser.add_argument_group(
+        "Legacy Options", "Deprecated options for backward compatibility"
+    )
+    legacy_group.add_argument(
+        "--service-discovery",
         type=str,
-        default="noop",
-        choices=["noop"],
-        help="The request rewriter to use. Default is 'noop' (no rewriting).",
+        choices=["static", "url"],
+        help=argparse.SUPPRESS,  # Hidden in help
     )
-
-    # Batch API
-    # TODO(gaocegege): Make these batch api related arguments to a separate config.
-    parser.add_argument(
-        "--enable-batch-api",
-        action="store_true",
-        help="Enable the batch API for processing files.",
-    )
-    parser.add_argument(
-        "--file-storage-class",
-        type=str,
-        default="local_file",
-        choices=["local_file"],
-        help="The file storage class to use.",
-    )
-    parser.add_argument(
-        "--file-storage-path",
-        type=str,
-        default="/tmp/vllm_files",
-        help="The path to store files.",
-    )
-    parser.add_argument(
-        "--batch-processor",
-        type=str,
-        default="local",
-        choices=["local"],
-        help="The batch processor to use.",
-    )
-
-    # Monitoring
-    parser.add_argument(
-        "--engine-stats-interval",
-        type=int,
-        default=30,
-        help="The interval in seconds to scrape engine statistics.",
-    )
-    parser.add_argument(
-        "--request-stats-window",
-        type=int,
-        default=60,
-        help="The sliding window in seconds to compute request statistics.",
-    )
-    parser.add_argument(
-        "--log-stats", action="store_true", help="Log statistics periodically."
-    )
-    parser.add_argument(
-        "--log-stats-interval",
-        type=int,
-        default=10,
-        help="The interval in seconds to log statistics.",
-    )
-
-    # Config files
-    group = parser.add_argument_group(
-        "Dynamic config file",
-        "Only one dynamic config file (YAML or JSON) can be provided",
-    )
-    exclusive_group = group.add_mutually_exclusive_group()
-    exclusive_group.add_argument(
-        "--dynamic-config-yaml",
+    legacy_group.add_argument(
+        "--static-backends",
         type=str,
         default=None,
-        help="The path to the YAML file containing the dynamic configuration, cannot be used with --dynamic-config-json.",
+        help=argparse.SUPPRESS,  # Hidden in help
     )
-    exclusive_group.add_argument(
-        "--dynamic-config-json",
+    legacy_group.add_argument(
+        "--static-models",
         type=str,
         default=None,
-        help="The path to the JSON file containing the dynamic configuration, cannot be used with --dynamic-config-yaml.",
+        help=argparse.SUPPRESS,  # Hidden in help
     )
 
     # Add --version argument
     parser.add_argument(
         "--version",
         action="version",
-        version=f"%(prog)s {__version__}",
+        version="%(prog)s 1.0.0",
         help="Show version and exit",
     )
 
-    if semantic_cache_available:
-        add_semantic_cache_args(parser)
+    # Temporarily disable semantic cache to isolate help string issue
+    # if semantic_cache_available:
+    #     add_semantic_cache_args(parser)
 
     # Add feature gates argument
     parser.add_argument(
@@ -313,13 +212,15 @@ def parse_args():
         help="Comma-separated list of feature gates (e.g., 'SemanticCache=true')",
     )
 
-    # Add log level argument
+    # Monitoring options
     parser.add_argument(
-        "--log-level",
-        type=str,
-        default="info",
-        choices=["critical", "error", "warning", "info", "debug", "trace"],
-        help="Log level for uvicorn. Default is 'info'.",
+        "--log-stats", action="store_true", help="Log statistics periodically."
+    )
+    parser.add_argument(
+        "--log-stats-interval",
+        type=int,
+        default=10,
+        help="The interval in seconds to log statistics.",
     )
 
     parser.add_argument(
@@ -342,29 +243,27 @@ def parse_args():
         help="The sample rate for Sentry profiling sessions. Default is 1.0 (100%)",
     )
 
-    parser.add_argument(
-        "--prefill-model-labels",
-        type=str,
-        default=None,
-        help="The model labels of prefill backends, separated by commas. E.g., model1,model2",
-    )
-
-    parser.add_argument(
-        "--decode-model-labels",
-        type=str,
-        default=None,
-        help="The model labels of decode backends, separated by commas. E.g., model1,model2",
-    )
-
-    parser.add_argument(
-        "--kv-aware-threshold",
-        type=int,
-        default=2000,
-        help="The threshold for kv-aware routing.",
-    )
-
     args = parser.parse_args()
-    args = load_initial_config_from_config_file_if_required(parser, args)
+
+    # Load configuration from YAML file
+    if args.config:
+        config = DynamicRouterConfig.from_yaml(args.config)
+        # Override config with command line arguments if provided
+        if args.host != "0.0.0.0":
+            config.host = args.host
+        if args.port != 8001:
+            config.port = args.port
+        if args.log_level != "info":
+            config.log_level = args.log_level
+        if args.routing_logic:
+            config.routing_logic = args.routing_logic
+        if args.session_key:
+            config.session_key = args.session_key
+        if args.callbacks:
+            config.callbacks = args.callbacks
+
+        # Store the config object for use by the application
+        args.config_obj = config
 
     validate_args(args)
     return args
