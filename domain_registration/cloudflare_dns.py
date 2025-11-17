@@ -7,8 +7,8 @@ import logging
 import time
 from typing import List, Optional, Dict, Any
 from cloudflare import Cloudflare
-from cloudflare.types.zone import Zone
-from cloudflare.types.dns_record import ARecord, CaaRecord, DnsRecord
+# Note: Type imports removed as they're not available in newer cloudflare versions
+# We'll use Any for type hints where needed
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +218,7 @@ class CloudflareDNSProvider:
 
     def get_dns_records(
         self, domain: str, record_type: Optional[str] = None
-    ) -> List[DnsRecord]:
+    ) -> List[Any]:
         """
         Get DNS records for a domain.
 
