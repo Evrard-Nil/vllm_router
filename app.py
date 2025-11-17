@@ -15,6 +15,7 @@ import asyncio
 import logging
 import threading
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 import uvicorn
 from fastapi import FastAPI
@@ -276,6 +277,20 @@ app.include_router(domain_registration_router)
 app.include_router(backend_management_router)
 app.state.aiohttp_client_wrapper = AiohttpClientWrapper()
 app.state.semantic_cache_available = semantic_cache_available
+
+
+# Exception handlers for domain registration endpoints
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    """Handle general exceptions with consistent error format."""
+    logger = logging.getLogger(__name__)
+    logger.error(f"Unhandled exception in {request.url.path}: {exc}")
+    return {
+        "error": "Internal server error",
+        "status_code": 500,
+        "path": str(request.url.path),
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
 
 
 def main():

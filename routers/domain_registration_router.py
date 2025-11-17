@@ -4,6 +4,7 @@ Provides REST API for certificate management and TLS attestation.
 """
 
 import logging
+from datetime import datetime
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -308,26 +309,24 @@ async def get_certificate_status():
                 ),
                 "expiration": expiration.isoformat() if expiration else None,
                 "days_until_expiry": (
-                    expiration
-                    - service.cert_manager.get_certificate_expiration(domain).replace(
-                        tzinfo=None
-                    )
-                ).days
-                if expiration
-                else None,
+                    (expiration.replace(tzinfo=None) - datetime.now()).days
+                    if expiration
+                    else None
+                ),
             }
+
+        # Get timestamp from first domain if available
+        timestamp = None
+        if service.config.domains:
+            first_expiration = service.cert_manager.get_certificate_expiration(
+                service.config.domains[0]
+            )
+            timestamp = first_expiration.isoformat() if first_expiration else None
 
         return {
             "certificates": cert_status,
             "total_domains": len(service.config.domains),
-            "timestamp": service.cert_manager.get_certificate_expiration(
-                domain
-            ).isoformat()
-            if service.config.domains
-            and service.cert_manager.get_certificate_expiration(
-                service.config.domains[0]
-            )
-            else None,
+            "timestamp": timestamp,
         }
 
     except HTTPException:
@@ -374,27 +373,3 @@ async def cleanup_old_evidence(
     except Exception as e:
         logger.error(f"Failed to cleanup old evidence: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# Error handlers
-@router.exception_handler(HTTPException)
-async def http_exception_handler(request, exc):
-    """Handle HTTP exceptions with consistent error format."""
-    return {
-        "error": exc.detail,
-        "status_code": exc.status_code,
-        "path": str(request.url.path),
-        "timestamp": "2025-01-16T15:14:00Z",  # Would use actual timestamp
-    }
-
-
-@router.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    """Handle general exceptions with consistent error format."""
-    logger.error(f"Unhandled exception in {request.url.path}: {exc}")
-    return {
-        "error": "Internal server error",
-        "status_code": 500,
-        "path": str(request.url.path),
-        "timestamp": "2025-01-16T15:14:00Z",  # Would use actual timestamp
-    }
