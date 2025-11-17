@@ -16,7 +16,6 @@ import logging
 import threading
 from contextlib import asynccontextmanager
 
-import sentry_sdk
 import uvicorn
 from fastapi import FastAPI
 
@@ -28,11 +27,13 @@ from dynamic_config import (
 )
 from experimental import get_feature_gates, initialize_feature_gates
 from parsers.parser import parse_args
+from env_config import is_env_config_enabled
 from routers.batches_router import batches_router
 from routers.files_router import files_router
 from routers.main_router import main_router
 from routers.metrics_router import metrics_router
 from routers.domain_registration_router import domain_registration_router
+from routers.backend_management_router import backend_management_router
 from routers.routing_logic import (
     get_routing_logic,
     initialize_routing_logic,
@@ -147,15 +148,6 @@ def initialize_all(app: FastAPI, args):
     Raises:
         ValueError: if the configuration is invalid
     """
-    if sentry_dsn := args.sentry_dsn:
-        sentry_sdk.init(
-            dsn=sentry_dsn,
-            send_default_pii=True,
-            profile_lifecycle="trace",
-            traces_sample_rate=args.sentry_traces_sample_rate,
-            profile_session_sample_rate=args.sentry_profile_session_sample_rate,
-        )
-
     # Use simplified configuration
     config = args.config_obj
 
@@ -186,8 +178,15 @@ def initialize_all(app: FastAPI, args):
     if config.callbacks:
         configure_custom_callbacks(config.callbacks, app)
 
-    # Initialize feature gates
-    initialize_feature_gates(args.feature_gates)
+    # Handle feature gates from environment variables or args
+    feature_gates_str = getattr(args, "feature_gates", "")
+    if is_env_config_enabled():
+        import os
+
+        feature_gates_str = feature_gates_str or os.getenv("FEATURE_GATES", "")
+
+    initialize_feature_gates(feature_gates_str)
+
     # Check if the SemanticCache feature gate is enabled
     feature_gates = get_feature_gates()
     if semantic_cache_available:
@@ -201,22 +200,38 @@ def initialize_all(app: FastAPI, args):
 
             logger.info("SemanticCache feature gate is enabled")
 
-            # Initialize the semantic cache with the model if specified
-            if args.semantic_cache_model:
-                logger.info(
-                    f"Initializing semantic cache with model: {args.semantic_cache_model}"
+            # Handle semantic cache configuration from environment variables or args
+            semantic_cache_model = getattr(args, "semantic_cache_model", None)
+            semantic_cache_dir = getattr(args, "semantic_cache_dir", None)
+            semantic_cache_threshold = getattr(args, "semantic_cache_threshold", 0.8)
+
+            if is_env_config_enabled():
+                import os
+
+                semantic_cache_model = semantic_cache_model or os.getenv(
+                    "SEMANTIC_CACHE_MODEL"
                 )
-                logger.info(
-                    f"Semantic cache directory: {args.semantic_cache_dir or 'default'}"
+                semantic_cache_dir = semantic_cache_dir or os.getenv(
+                    "SEMANTIC_CACHE_DIR"
                 )
-                logger.info(
-                    f"Semantic cache threshold: {args.semantic_cache_threshold}"
+                semantic_cache_threshold = float(
+                    os.getenv("SEMANTIC_CACHE_THRESHOLD", str(semantic_cache_threshold))
                 )
 
+            # Initialize the semantic cache with the model if specified
+            if semantic_cache_model:
+                logger.info(
+                    f"Initializing semantic cache with model: {semantic_cache_model}"
+                )
+                logger.info(
+                    f"Semantic cache directory: {semantic_cache_dir or 'default'}"
+                )
+                logger.info(f"Semantic cache threshold: {semantic_cache_threshold}")
+
                 cache = initialize_semantic_cache(
-                    embedding_model=args.semantic_cache_model,
-                    cache_dir=args.semantic_cache_dir,
-                    default_similarity_threshold=args.semantic_cache_threshold,
+                    embedding_model=semantic_cache_model,
+                    cache_dir=semantic_cache_dir,
+                    default_similarity_threshold=semantic_cache_threshold,
                 )
 
                 # Update cache size metric
@@ -229,18 +244,20 @@ def initialize_all(app: FastAPI, args):
                     )
 
                 logger.info(
-                    f"Semantic cache initialized with model {args.semantic_cache_model}"
+                    f"Semantic cache initialized with model {semantic_cache_model}"
                 )
             else:
                 logger.warning(
                     "SemanticCache feature gate is enabled but no embedding model specified. "
                     "The semantic cache will not be functional without an embedding model. "
-                    "Use --semantic-cache-model to specify an embedding model."
+                    "Set SEMANTIC_CACHE_MODEL environment variable or use --semantic-cache-model."
                 )
-        elif args.semantic_cache_model:
+        elif getattr(args, "semantic_cache_model", None) or (
+            is_env_config_enabled() and os.getenv("SEMANTIC_CACHE_MODEL")
+        ):
             logger.warning(
                 "Semantic cache model specified but SemanticCache feature gate is not enabled. "
-                "Enable the feature gate with --feature-gates=SemanticCache=true"
+                "Enable the feature gate with FEATURE_GATES=SemanticCache=true"
             )
 
     # --- Hybrid addition: attach singletons to FastAPI state ---
@@ -256,6 +273,7 @@ app.include_router(files_router)
 app.include_router(batches_router)
 app.include_router(metrics_router)
 app.include_router(domain_registration_router)
+app.include_router(backend_management_router)
 app.state.aiohttp_client_wrapper = AiohttpClientWrapper()
 app.state.semantic_cache_available = semantic_cache_available
 
@@ -267,13 +285,28 @@ def main():
     # Use config from the config object
     config = args.config_obj
 
-    if args.log_stats:
+    # Handle log stats from environment variables or args
+    log_stats_enabled = getattr(args, "log_stats", False)
+    if is_env_config_enabled():
+        # If using env config, check if log_stats was set via environment
+        import os
+
+        log_stats_enabled = (
+            log_stats_enabled or os.getenv("LOG_STATS", "false").lower() == "true"
+        )
+
+    if log_stats_enabled:
+        log_stats_interval = getattr(args, "log_stats_interval", 10)
+        if is_env_config_enabled():
+            import os
+
+            log_stats_interval = int(
+                os.getenv("LOG_STATS_INTERVAL", str(log_stats_interval))
+            )
+
         threading.Thread(
             target=log_stats,
-            args=(
-                app,
-                getattr(args, "log_stats_interval", 10),  # Default interval
-            ),
+            args=(app, log_stats_interval),
             daemon=True,
         ).start()
 

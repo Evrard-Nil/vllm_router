@@ -606,6 +606,82 @@ class BackendListServiceDiscovery(ServiceDiscovery):
         """
         return self.refresh_thread.is_alive()
 
+    def add_backend(self, backend_url: str) -> bool:
+        """
+        Add a new backend to the backend list and trigger model discovery.
+
+        Args:
+            backend_url: the URL of the backend to add
+
+        Returns:
+            True if the backend was added successfully, False otherwise
+        """
+        # Normalize backend URL
+        if not backend_url.startswith(("http://", "https://")):
+            backend_url = f"http://{backend_url}"
+
+        # Check if backend already exists
+        if backend_url in self.backends:
+            logger.warning(f"Backend {backend_url} already exists")
+            return False
+
+        # Test if backend is reachable and has models
+        try:
+            models_data = self._fetch_models_from_backend(backend_url)
+            models = models_data.get("models", [])
+            if not models:
+                logger.warning(f"No models found on backend {backend_url}")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to connect to backend {backend_url}: {e}")
+            return False
+
+        # Add backend to the list
+        self.backends.append(backend_url)
+        logger.info(f"Added backend {backend_url}")
+
+        # Trigger immediate refresh to discover models
+        self._update_engines_from_backends()
+
+        return True
+
+    def remove_backend(self, backend_url: str) -> bool:
+        """
+        Remove a backend from the backend list and clean up its model information.
+
+        Args:
+            backend_url: the URL of the backend to remove
+
+        Returns:
+            True if the backend was removed successfully, False otherwise
+        """
+        # Normalize backend URL
+        if not backend_url.startswith(("http://", "https://")):
+            backend_url = f"http://{backend_url}"
+
+        # Check if backend exists
+        if backend_url not in self.backends:
+            logger.warning(f"Backend {backend_url} not found")
+            return False
+
+        # Remove backend from the list
+        self.backends.remove(backend_url)
+        logger.info(f"Removed backend {backend_url}")
+
+        # Trigger immediate refresh to update available engines
+        self._update_engines_from_backends()
+
+        return True
+
+    def get_backends(self) -> List[str]:
+        """
+        Get the current list of backend URLs.
+
+        Returns:
+            List of backend URLs
+        """
+        return self.backends.copy()
+
     def close(self) -> None:
         """
         Close the service discovery module.

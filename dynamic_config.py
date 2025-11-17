@@ -36,6 +36,7 @@ from utils import (
     parse_static_aliases,
     parse_static_urls,
 )
+from env_config import RouterConfig, load_config_from_env, is_env_config_enabled
 
 logger = init_logger(__name__)
 
@@ -95,6 +96,13 @@ class DynamicRouterConfig:
         with open(json_path, "r") as f:
             config = json.load(f)
         return DynamicRouterConfig(**config)
+
+    @staticmethod
+    def from_env() -> "DynamicRouterConfig":
+        """Create DynamicRouterConfig from environment variables."""
+        env_config = load_config_from_env()
+        config_dict = env_config.to_dict()
+        return DynamicRouterConfig(**config_dict)
 
     def to_json_str(self) -> str:
         return json.dumps(self, default=lambda o: o.__dict__, sort_keys=True, indent=4)

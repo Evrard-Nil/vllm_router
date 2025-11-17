@@ -22,6 +22,7 @@ from parsers.yaml_utils import (
     read_and_process_yaml_config_file,
 )
 from version import __version__
+from env_config import is_env_config_enabled, load_config_from_env
 
 try:
     from experimental.semantic_cache_integration import (
@@ -99,27 +100,22 @@ def validate_args(args):
                 "Session key must be provided when using session routing logic."
             )
 
-    # Validate Sentry configuration
-    if not (0.0 <= args.sentry_traces_sample_rate <= 1.0):
-        raise ValueError("Sentry traces sample rate must be between 0.0 and 1.0.")
-    if not (0.0 <= args.sentry_profile_session_sample_rate <= 1.0):
-        raise ValueError(
-            "Sentry profile session sample rate must be between 0.0 and 1.0."
-        )
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run the FastAPI app.")
 
-    # Simplified configuration - just a config file
+    # Check if environment-based configuration is enabled
+    env_config_enabled = is_env_config_enabled()
+
+    # Simplified configuration - just a config file (optional if env config is enabled)
     config_group = parser.add_argument_group(
         "Configuration", "Simplified configuration using a YAML file with backend list"
     )
     config_group.add_argument(
         "--config",
         type=str,
-        required=True,
-        help="Path to the YAML configuration file containing the backend list and settings.",
+        required=not env_config_enabled,
+        help="Path to the YAML configuration file containing the backend list and settings. Not required if ROUTER_ENV_CONFIG=true.",
     )
 
     # Basic server settings (can be overridden by config file)
@@ -223,30 +219,30 @@ def parse_args():
         help="The interval in seconds to log statistics.",
     )
 
-    parser.add_argument(
-        "--sentry-dsn",
-        type=str,
-        help="Enables Sentry Error Reporting to the specified Data Source Name",
-    )
-
-    parser.add_argument(
-        "--sentry-traces-sample-rate",
-        type=float,
-        default=0.1,
-        help="The sample rate for Sentry traces. Default is 0.1 (10%)",
-    )
-
-    parser.add_argument(
-        "--sentry-profile-session-sample-rate",
-        type=float,
-        default=1.0,
-        help="The sample rate for Sentry profiling sessions. Default is 1.0 (100%)",
-    )
-
     args = parser.parse_args()
 
-    # Load configuration from YAML file
-    if args.config:
+    # Load configuration from environment variables or YAML file
+    if env_config_enabled and not args.config:
+        logger.info("Loading configuration from environment variables")
+        config = DynamicRouterConfig.from_env()
+        # Override config with command line arguments if provided
+        if args.host != "0.0.0.0":
+            config.host = args.host
+        if args.port != 8001:
+            config.port = args.port
+        if args.log_level != "info":
+            config.log_level = args.log_level
+        if args.routing_logic:
+            config.routing_logic = args.routing_logic
+        if args.session_key:
+            config.session_key = args.session_key
+        if args.callbacks:
+            config.callbacks = args.callbacks
+
+        # Store the config object for use by the application
+        args.config_obj = config
+    elif args.config:
+        logger.info(f"Loading configuration from YAML file: {args.config}")
         config = DynamicRouterConfig.from_yaml(args.config)
         # Override config with command line arguments if provided
         if args.host != "0.0.0.0":
@@ -264,6 +260,11 @@ def parse_args():
 
         # Store the config object for use by the application
         args.config_obj = config
+    else:
+        logger.error(
+            "No configuration source available. Either set ROUTER_ENV_CONFIG=true or provide --config"
+        )
+        sys.exit(1)
 
     validate_args(args)
     return args
