@@ -181,3 +181,4 @@ docs/book/src/docs
 
 .GIT_REV
 oci.tar
+.env
