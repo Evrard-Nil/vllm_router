@@ -17,3 +17,4 @@ nv-attestation-sdk>=0.1.0
 pynvml>=11.0.0
 verifier>=0.1.0
 web3>=6.0.0
+cloudflare>=2.19.4
