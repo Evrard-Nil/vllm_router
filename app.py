@@ -22,14 +22,13 @@ import uvicorn
 from fastapi import FastAPI
 
 from aiohttp_client import AiohttpClientWrapper
-from dynamic_config import DynamicRouterConfig
 from experimental import get_feature_gates, initialize_feature_gates
 from parsers.parser import parse_args
 from routers.batches_router import batches_router
 from routers.files_router import files_router
 from routers.main_router import main_router
 from routers.metrics_router import metrics_router
-from routers.domain_registration_router import domain_registration_router
+from routers.domain_registration_router import router as domain_registration_router
 from routers.backend_management_router import backend_management_router
 from routers.routing_logic import (
     get_routing_logic,
@@ -40,7 +39,6 @@ from service_discovery import (
     get_service_discovery,
     initialize_service_discovery,
 )
-from services.batch_service import initialize_batch_processor
 from services.callbacks_service.callbacks import configure_custom_callbacks
 from services.domain_registration_service import (
     initialize_domain_registration_service,
@@ -48,7 +46,6 @@ from services.domain_registration_service import (
     set_domain_registration_service,
     DomainRegistrationService,
 )
-from services.files_service import initialize_storage
 from services.request_service.rewriter import (
     get_request_rewriter,
 )
@@ -61,12 +58,7 @@ from stats.request_stats import (
     get_request_stats_monitor,
     initialize_request_stats_monitor,
 )
-from utils import (
-    parse_comma_separated_args,
-    parse_static_aliases,
-    parse_static_urls,
-    set_ulimit,
-)
+from utils import set_ulimit
 
 try:
     # Semantic cache integration
@@ -171,6 +163,7 @@ def initialize_all(app: FastAPI, args):
 
     # Handle feature gates from environment variables or args
     import os
+
     feature_gates_str = getattr(args, "feature_gates", "")
     feature_gates_str = feature_gates_str or os.getenv("FEATURE_GATES", "")
 
@@ -197,9 +190,7 @@ def initialize_all(app: FastAPI, args):
             semantic_cache_model = semantic_cache_model or os.getenv(
                 "SEMANTIC_CACHE_MODEL"
             )
-            semantic_cache_dir = semantic_cache_dir or os.getenv(
-                "SEMANTIC_CACHE_DIR"
-            )
+            semantic_cache_dir = semantic_cache_dir or os.getenv("SEMANTIC_CACHE_DIR")
             semantic_cache_threshold = float(
                 os.getenv("SEMANTIC_CACHE_THRESHOLD", str(semantic_cache_threshold))
             )
@@ -238,7 +229,9 @@ def initialize_all(app: FastAPI, args):
                     "The semantic cache will not be functional without an embedding model. "
                     "Set SEMANTIC_CACHE_MODEL environment variable or use --semantic-cache-model."
                 )
-        elif getattr(args, "semantic_cache_model", None) or os.getenv("SEMANTIC_CACHE_MODEL"):
+        elif getattr(args, "semantic_cache_model", None) or os.getenv(
+            "SEMANTIC_CACHE_MODEL"
+        ):
             logger.warning(
                 "Semantic cache model specified but SemanticCache feature gate is not enabled. "
                 "Enable the feature gate with FEATURE_GATES=SemanticCache=true"
