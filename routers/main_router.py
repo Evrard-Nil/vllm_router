@@ -22,6 +22,7 @@ from fastapi import (
     HTTPException,
     Query,
     Header,
+    Depends,
 )
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from quote.quote import (
@@ -33,6 +34,7 @@ from quote.quote import (
     sign_chat,
 )
 from cache.cache import set_chat, get_chat
+from middleware.user_auth import require_user_token
 
 from dynamic_config import get_dynamic_config_watcher
 from log import init_logger
@@ -155,6 +157,7 @@ async def route_chat_completion(
     request: Request,
     background_tasks: BackgroundTasks,
     x_request_hash: Optional[str] = Header(None, alias="X-Request-Hash"),
+    auth: str = Depends(require_user_token),
 ):
     if semantic_cache_available:
         # Check if the request can be served from the semantic cache
@@ -176,6 +179,7 @@ async def route_completion(
     request: Request,
     background_tasks: BackgroundTasks,
     x_request_hash: Optional[str] = Header(None, alias="X-Request-Hash"),
+    auth: str = Depends(require_user_token),
 ):
     return await route_general_request_with_signing(
         request, "/v1/completions", background_tasks, x_request_hash

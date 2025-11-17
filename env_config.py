@@ -5,7 +5,7 @@ Handles all environment variable parsing and validation for Docker Compose deplo
 
 import os
 import logging
-from typing import List, Optional, Union
+from typing import List, Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,9 @@ class RouterConfig:
     # Admin settings
     admin_token: Optional[str]
 
+    # User settings
+    user_token: Optional[str]
+
     @classmethod
     def from_env(cls) -> "RouterConfig":
         """Load configuration from environment variables."""
@@ -90,6 +93,8 @@ class RouterConfig:
             ),
             # Admin settings
             admin_token=os.getenv("ADMIN_TOKEN"),
+            # User settings
+            user_token=os.getenv("USER_TOKEN"),
         )
 
     @staticmethod
