@@ -3,12 +3,13 @@ Cloudflare DNS provider for domain registration.
 Handles DNS record management for Let's Encrypt DNS-01 challenges.
 """
 
+import json
 import logging
+import sys
 import time
 from typing import List, Optional, Dict, Any
-from cloudflare import Cloudflare
-# Note: Type imports removed as they're not available in newer cloudflare versions
-# We'll use Any for type hints where needed
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -25,20 +26,135 @@ class CloudflareDNSProvider:
             zone_id: Optional zone ID (auto-detected if not provided)
         """
         self.api_token = api_token
+        self.base_url = "https://api.cloudflare.com/client/v4"
+        self.headers = {
+            "Authorization": f"Bearer {self.api_token}",
+            "Content-Type": "application/json",
+        }
         self.zone_id = zone_id
-        self.client = Cloudflare(api_token=api_token)
+        self.zone_domain: Optional[str] = None  # Cache the domain for the zone
         self._zone_cache: Dict[str, str] = {}
+
+    def _make_request(
+        self, method: str, endpoint: str, data: Optional[Dict] = None
+    ) -> Dict:
+        """Make a request to the Cloudflare API with error handling."""
+        url = f"{self.base_url}/{endpoint}"
+        try:
+            if method.upper() == "GET":
+                response = requests.get(url, headers=self.headers)
+            elif method.upper() == "POST":
+                response = requests.post(url, headers=self.headers, json=data)
+            elif method.upper() == "DELETE":
+                response = requests.delete(url, headers=self.headers)
+            elif method.upper() == "PUT":
+                response = requests.put(url, headers=self.headers, json=data)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+
+            response.raise_for_status()
+            result = response.json()
+
+            if not result.get("success", False):
+                errors = result.get("errors", [])
+                error_msg = "\n".join(
+                    [
+                        f"Code: {e.get('code')}, Message: {e.get('message')}"
+                        for e in errors
+                    ]
+                )
+                logger.error(f"API Error: {error_msg}")
+                if data:
+                    logger.debug(f"Request data: {json.dumps(data)}")
+                return {"success": False, "errors": errors}
+
+            return result
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request Error: {str(e)}")
+            if data:
+                logger.debug(f"Request data: {json.dumps(data)}")
+            return {"success": False, "errors": [{"message": str(e)}]}
+        except json.JSONDecodeError:
+            logger.error("JSON Decode Error: Could not parse response")
+            return {
+                "success": False,
+                "errors": [{"message": "Could not parse response"}],
+            }
+        except Exception as e:
+            logger.error(f"Unexpected Error: {str(e)}")
+            return {"success": False, "errors": [{"message": str(e)}]}
 
     def validate_credentials(self) -> bool:
         """Validate Cloudflare API token."""
         try:
-            # Test the API token by getting user info
-            self.client.user.tokens.verify()
-            logger.info("Cloudflare API token validation successful")
-            return True
+            # Test the API token by verifying it
+            result = self._make_request("GET", "user/tokens/verify")
+            if result.get("success", False):
+                logger.info("Cloudflare API token validation successful")
+                return True
+            else:
+                logger.error("Cloudflare API token validation failed")
+                return False
         except Exception as e:
             logger.error(f"Cloudflare API token validation failed: {e}")
             return False
+
+    def _get_zone_info(self, domain: str) -> Optional[tuple[str, str]]:
+        """Get the zone ID and zone name for a domain with pagination support."""
+        zone_name_len = 0
+        zone_id = None
+        zone_name_found = None
+
+        page = 1
+        total_pages = 1
+
+        while page <= total_pages:
+            result = self._make_request("GET", f"zones?page={page}")
+
+            if not result.get("success", False):
+                return None
+
+            zones = result.get("result", [])
+            if not zones and page == 1:
+                logger.error("No zones found for any domain")
+                return None
+
+            result_info = result.get("result_info", {})
+            if result_info:
+                total_pages = result_info.get("total_pages", total_pages)
+
+            for zone in zones:
+                zone_name = zone.get("name", "")
+                # Exact match - return immediately
+                if domain == zone_name:
+                    return (zone.get("id"), zone_name)
+                # Subdomain match - keep track of longest match
+                if domain.endswith(f".{zone_name}") and len(zone_name) > zone_name_len:
+                    zone_name_len = len(zone_name)
+                    zone_id = zone.get("id")
+                    zone_name_found = zone_name
+
+            page += 1
+
+        if zone_id and zone_name_found:
+            return (zone_id, zone_name_found)
+        else:
+            logger.error(f"Zone ID not found in response for domain: {domain}")
+            return None
+
+    def _ensure_zone_id(self, domain: str) -> Optional[str]:
+        """Ensure we have a zone ID for the domain, fetching if necessary."""
+        # If we have a cached zone that matches this domain, use it
+        if self.zone_id and self.zone_domain:
+            if domain == self.zone_domain or domain.endswith(f".{self.zone_domain}"):
+                return self.zone_id
+
+        # Otherwise, fetch zone info
+        zone_info = self._get_zone_info(domain)
+        if zone_info:
+            self.zone_id, self.zone_domain = zone_info
+            logger.info(f"Found zone ID {self.zone_id} for domain {domain} (zone: {self.zone_domain})")
+        return self.zone_id
 
     def get_zone_id(self, domain: str) -> str:
         """
@@ -53,69 +169,10 @@ class CloudflareDNSProvider:
         Raises:
             ValueError: If zone not found
         """
-        if self.zone_id:
-            logger.debug(f"Using configured zone ID: {self.zone_id}")
-            return self.zone_id
-
-        # Check cache first
-        if domain in self._zone_cache:
-            logger.debug(
-                f"Using cached zone ID for {domain}: {self._zone_cache[domain]}"
-            )
-            return self._zone_cache[domain]
-
-        # Extract zone name from domain
-        zone_name = self._extract_zone_name(domain)
-        logger.debug(f"Looking up zone for domain {domain} (zone: {zone_name})")
-
-        try:
-            zones = self.client.zones.list(name=zone_name)
-            if not zones:
-                raise ValueError(
-                    f"Zone not found for domain: {domain} (tried zone: {zone_name})"
-                )
-
-            zone_id = zones[0].id
-            self._zone_cache[domain] = zone_id
-            logger.info(f"Found zone ID {zone_id} for domain {domain}")
-            return zone_id
-
-        except Exception as e:
-            logger.error(f"Failed to get zone ID for {domain}: {e}")
-            raise ValueError(f"Zone not found for domain: {domain}") from e
-
-    def _extract_zone_name(self, domain: str) -> str:
-        """Extract zone name from domain (remove subdomains)."""
-        # Handle wildcard domains
-        if domain.startswith("*."):
-            domain = domain[2:]
-
-        # For now, assume the domain itself is the zone
-        # In a more complex implementation, we might need to try different levels
-        parts = domain.split(".")
-        if len(parts) >= 2:
-            # Return the last two parts as the zone (e.g., example.com)
-            return ".".join(parts[-2:])
-        return domain
-
-    def _get_record_name(self, domain: str, zone_id: str) -> str:
-        """Get DNS record name relative to zone."""
-        zone_name = self._get_zone_name_by_id(zone_id)
-        if domain == zone_name:
-            return "@"  # Root domain
-        elif domain.endswith("." + zone_name):
-            return domain[: -len("." + zone_name)]
-        else:
-            return domain
-
-    def _get_zone_name_by_id(self, zone_id: str) -> str:
-        """Get zone name by zone ID."""
-        try:
-            zone = self.client.zones.get(zone_id)
-            return zone.name
-        except Exception as e:
-            logger.error(f"Failed to get zone name for ID {zone_id}: {e}")
-            return ""
+        zone_id = self._ensure_zone_id(domain)
+        if not zone_id:
+            raise ValueError(f"Zone not found for domain: {domain}")
+        return zone_id
 
     def set_a_record(self, domain: str, ip_address: str, ttl: int = 60) -> bool:
         """
@@ -131,26 +188,28 @@ class CloudflareDNSProvider:
         """
         try:
             zone_id = self.get_zone_id(domain)
-            record_name = self._get_record_name(domain, zone_id)
 
-            logger.info(
-                f"Setting A record for {domain} (zone: {zone_id}, record: {record_name}) -> {ip_address}"
-            )
+            logger.info(f"Setting A record for {domain} (zone: {zone_id}) -> {ip_address}")
 
             # Delete existing A records for this name
-            self._delete_existing_records(zone_id, record_name, "A")
+            self._delete_existing_records(zone_id, domain, "A")
 
             # Create new A record
             record_data = {
-                "name": record_name,
+                "name": domain,
                 "type": "A",
                 "content": ip_address,
                 "ttl": ttl,
             }
 
-            result = self.client.dns.records.create(zone_id=zone_id, **record_data)
-            logger.info(f"Created A record {result.id} for {domain}")
-            return True
+            result = self._make_request("POST", f"zones/{zone_id}/dns_records", record_data)
+            if result.get("success", False):
+                record_id = result.get("result", {}).get("id")
+                logger.info(f"Created A record {record_id} for {domain}")
+                return True
+            else:
+                logger.error(f"Failed to create A record for {domain}")
+                return False
 
         except Exception as e:
             logger.error(f"Failed to create A record for {domain}: {e}")
@@ -169,26 +228,28 @@ class CloudflareDNSProvider:
         """
         try:
             zone_id = self.get_zone_id(domain)
-            record_name = self._get_record_name(domain, zone_id)
 
-            logger.info(
-                f"Setting CAA record for {domain} (zone: {zone_id}, record: {record_name})"
-            )
+            logger.info(f"Setting CAA record for {domain} (zone: {zone_id})")
 
             # Delete existing CAA records for this name
-            self._delete_existing_records(zone_id, record_name, "CAA")
+            self._delete_existing_records(zone_id, domain, "CAA")
 
             # Create CAA record for Let's Encrypt
             record_data = {
-                "name": record_name,
+                "name": domain,
                 "type": "CAA",
-                "data": {"tag": "issue", "value": "letsencrypt.org"},
+                "data": {"flags": 0, "tag": "issue", "value": "letsencrypt.org"},
                 "ttl": ttl,
             }
 
-            result = self.client.dns.records.create(zone_id=zone_id, **record_data)
-            logger.info(f"Created CAA record {result.id} for {domain}")
-            return True
+            result = self._make_request("POST", f"zones/{zone_id}/dns_records", record_data)
+            if result.get("success", False):
+                record_id = result.get("result", {}).get("id")
+                logger.info(f"Created CAA record {record_id} for {domain}")
+                return True
+            else:
+                logger.error(f"Failed to create CAA record for {domain}")
+                return False
 
         except Exception as e:
             logger.error(f"Failed to create CAA record for {domain}: {e}")
@@ -200,16 +261,26 @@ class CloudflareDNSProvider:
         """Delete existing records of specified type and name."""
         try:
             # List existing records
-            records = self.client.dns.records.list(
-                zone_id=zone_id, name=record_name, type=record_type
-            )
+            params = f"zones/{zone_id}/dns_records?name={record_name}&type={record_type}"
+            result = self._make_request("GET", params)
 
+            if not result.get("success", False):
+                logger.warning(f"Failed to list existing {record_type} records for {record_name}")
+                return
+
+            records = result.get("result", [])
             # Delete each record
             for record in records:
-                logger.debug(
-                    f"Deleting existing {record_type} record {record.id} for {record_name}"
-                )
-                self.client.dns.records.delete(record.id)
+                record_id = record.get("id")
+                if record_id:
+                    logger.debug(
+                        f"Deleting existing {record_type} record {record_id} for {record_name}"
+                    )
+                    delete_result = self._make_request(
+                        "DELETE", f"zones/{zone_id}/dns_records/{record_id}"
+                    )
+                    if not delete_result.get("success", False):
+                        logger.warning(f"Failed to delete record {record_id}")
 
         except Exception as e:
             logger.warning(
@@ -218,7 +289,7 @@ class CloudflareDNSProvider:
 
     def get_dns_records(
         self, domain: str, record_type: Optional[str] = None
-    ) -> List[Any]:
+    ) -> List[Dict[str, Any]]:
         """
         Get DNS records for a domain.
 
@@ -231,17 +302,18 @@ class CloudflareDNSProvider:
         """
         try:
             zone_id = self.get_zone_id(domain)
-            record_name = self._get_record_name(domain, zone_id)
 
-            params = {
-                "zone_id": zone_id,
-                "name": record_name,
-            }
+            params = f"zones/{zone_id}/dns_records?name={domain}"
             if record_type:
-                params["type"] = record_type
+                params += f"&type={record_type}"
 
-            records = self.client.dns.records.list(**params)
-            return list(records)
+            result = self._make_request("GET", params)
+
+            if not result.get("success", False):
+                logger.error(f"Failed to get DNS records for {domain}")
+                return []
+
+            return result.get("result", [])
 
         except Exception as e:
             logger.error(f"Failed to get DNS records for {domain}: {e}")
@@ -302,11 +374,10 @@ class CloudflareDNSProvider:
         """
         try:
             zone_id = self.get_zone_id(domain)
-            record_name = self._get_record_name(domain, zone_id)
 
             # Delete A and CAA records
-            self._delete_existing_records(zone_id, record_name, "A")
-            self._delete_existing_records(zone_id, record_name, "CAA")
+            self._delete_existing_records(zone_id, domain, "A")
+            self._delete_existing_records(zone_id, domain, "CAA")
 
             logger.info(f"Cleaned up DNS records for {domain}")
             return True
