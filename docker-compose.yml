@@ -10,13 +10,11 @@ services:
       - ROUTER_PORT=8001
       - ROUTER_LOG_LEVEL=info
       - BACKENDS=${BACKENDS}
-      - VLLM_BACKENDS=${VLLM_BACKENDS}
       - ROUTING_LOGIC=kvaware
       - DOMAIN_REGISTRATION_ENABLED=true
       - CERTBOT_EMAIL=${CERTBOT_EMAIL}
       - STATIC_IP=${STATIC_IP}
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
-      - CLOUDFLARE_ZONE_ID=${CLOUDFLARE_ZONE_ID}
       - DOMAINS=${DOMAINS}
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
@@ -31,10 +29,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
-networks:
-  vllm-network:
-    driver: bridge
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "vllm-router", "service": "vllm-router",  "tags":["env:${ENV}","ip:${HOST_IP}"]}]'
 
 volumes:
   cert-data:

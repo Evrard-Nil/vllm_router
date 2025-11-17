@@ -38,9 +38,11 @@ logger = logging.getLogger(__name__)
 
 
 def verify_required_args_provided(args: argparse.Namespace) -> None:
-    # For simplified config, we only need the config file
+    # Check if we have a valid config object
     if not hasattr(args, "config_obj") or not args.config_obj:
-        logger.error("--config must be provided.")
+        logger.error(
+            "No configuration available. Either set ROUTER_ENV_CONFIG=true or provide --config"
+        )
         sys.exit(1)
 
     # Validate that the config has backends
@@ -114,7 +116,7 @@ def parse_args():
     config_group.add_argument(
         "--config",
         type=str,
-        required=not env_config_enabled,
+        required=False,
         help="Path to the YAML configuration file containing the backend list and settings. Not required if ROUTER_ENV_CONFIG=true.",
     )
 

@@ -13,11 +13,12 @@
 # limitations under the License.
 
 from typing import Dict, Any
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Header, Depends
 from pydantic import BaseModel
 from log import init_logger
 
 from service_discovery import get_service_discovery, ServiceDiscoveryType
+from middleware.admin_auth import verify_admin_token
 
 logger = init_logger(__name__)
 
@@ -40,20 +41,28 @@ class BackendsListResponse(BaseModel):
 
 
 @backend_management_router.post("/backend", response_model=BackendResponse)
-async def add_backend(request: Request, backend_request: BackendRequest):
+async def add_backend(
+    request: Request,
+    backend_request: BackendRequest,
+    authorization: str = Header(None, alias="Authorization"),
+):
     """
     Add a new backend to the router.
 
     Args:
         request: The FastAPI request object
         backend_request: Request containing the backend URL to add
+        authorization: Authorization header with admin token
 
     Returns:
         BackendResponse: Response indicating success or failure
 
     Raises:
-        HTTPException: If the backend cannot be added
+        HTTPException: If the backend cannot be added or authentication fails
     """
+    # Verify admin token
+    verify_admin_token(authorization)
+
     try:
         service_discovery = get_service_discovery()
 
@@ -91,20 +100,28 @@ async def add_backend(request: Request, backend_request: BackendRequest):
 
 
 @backend_management_router.delete("/backend", response_model=BackendResponse)
-async def remove_backend(request: Request, backend_request: BackendRequest):
+async def remove_backend(
+    request: Request,
+    backend_request: BackendRequest,
+    authorization: str = Header(None, alias="Authorization"),
+):
     """
     Remove a backend from the router.
 
     Args:
         request: The FastAPI request object
         backend_request: Request containing the backend URL to remove
+        authorization: Authorization header with admin token
 
     Returns:
         BackendResponse: Response indicating success or failure
 
     Raises:
-        HTTPException: If the backend cannot be removed
+        HTTPException: If the backend cannot be removed or authentication fails
     """
+    # Verify admin token
+    verify_admin_token(authorization)
+
     try:
         service_discovery = get_service_discovery()
 
@@ -142,19 +159,25 @@ async def remove_backend(request: Request, backend_request: BackendRequest):
 
 
 @backend_management_router.get("/backends", response_model=BackendsListResponse)
-async def list_backends(request: Request):
+async def list_backends(
+    request: Request, authorization: str = Header(None, alias="Authorization")
+):
     """
     Get the current list of backends.
 
     Args:
         request: The FastAPI request object
+        authorization: Authorization header with admin token
 
     Returns:
         BackendsListResponse: Response containing the list of backend URLs
 
     Raises:
-        HTTPException: If the backends cannot be listed
+        HTTPException: If the backends cannot be listed or authentication fails
     """
+    # Verify admin token
+    verify_admin_token(authorization)
+
     try:
         service_discovery = get_service_discovery()
 

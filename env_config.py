@@ -50,6 +50,9 @@ class RouterConfig:
     semantic_cache_dir: Optional[str]
     semantic_cache_threshold: float
 
+    # Admin settings
+    admin_token: Optional[str]
+
     @classmethod
     def from_env(cls) -> "RouterConfig":
         """Load configuration from environment variables."""
@@ -85,6 +88,8 @@ class RouterConfig:
             semantic_cache_threshold=float(
                 os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.8")
             ),
+            # Admin settings
+            admin_token=os.getenv("ADMIN_TOKEN"),
         )
 
     @staticmethod
@@ -228,6 +233,8 @@ class RouterConfig:
             logger.info(
                 f"  Semantic Cache: Enabled with model {self.semantic_cache_model}"
             )
+        if self.admin_token:
+            logger.info("  Admin Token: Configured")
 
 
 def load_config_from_env() -> RouterConfig:
