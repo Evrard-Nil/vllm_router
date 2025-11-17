@@ -12,17 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
-import json
 import logging
 import sys
 
 import utils
 from dynamic_config import DynamicRouterConfig
-from parsers.yaml_utils import (
-    read_and_process_yaml_config_file,
-)
 from version import __version__
-from env_config import is_env_config_enabled, load_config_from_env
 
 try:
     from experimental.semantic_cache_integration import (
@@ -41,7 +36,7 @@ def verify_required_args_provided(args: argparse.Namespace) -> None:
     # Check if we have a valid config object
     if not hasattr(args, "config_obj") or not args.config_obj:
         logger.error(
-            "No configuration available. Either set ROUTER_ENV_CONFIG=true or provide --config"
+            "No configuration available. Please configure environment variables (see .env.example)"
         )
         sys.exit(1)
 
@@ -49,30 +44,6 @@ def verify_required_args_provided(args: argparse.Namespace) -> None:
     if not args.config_obj.backends:
         logger.error("Configuration must include at least one backend.")
         sys.exit(1)
-
-
-def load_initial_config_from_config_file_if_required(
-    parser: argparse.ArgumentParser, args: argparse.Namespace
-) -> argparse.Namespace:
-    dynamic_config_yaml = args.dynamic_config_yaml
-    dynamic_config_json = args.dynamic_config_json
-
-    if dynamic_config_yaml:
-        logger.info(
-            f"Initial loading of dynamic YAML config file at {dynamic_config_yaml}"
-        )
-        yaml_config = read_and_process_yaml_config_file(dynamic_config_yaml)
-        parser.set_defaults(**yaml_config)
-        args = parser.parse_args()
-    elif dynamic_config_json:
-        logger.info(
-            f"Initial loading of dynamic JSON config file at {dynamic_config_json}"
-        )
-        with open(dynamic_config_json, encoding="utf-8") as f:
-            parser.set_defaults(**json.load(f))
-            args = parser.parse_args()
-
-    return args
 
 
 def validate_static_model_types(model_types: str | None) -> None:
@@ -104,25 +75,13 @@ def validate_args(args):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run the FastAPI app.")
-
-    # Check if environment-based configuration is enabled
-    env_config_enabled = is_env_config_enabled()
-
-    # Simplified configuration - just a config file (optional if env config is enabled)
-    config_group = parser.add_argument_group(
-        "Configuration", "Simplified configuration using a YAML file with backend list"
-    )
-    config_group.add_argument(
-        "--config",
-        type=str,
-        required=False,
-        help="Path to the YAML configuration file containing the backend list and settings. Not required if ROUTER_ENV_CONFIG=true.",
+    parser = argparse.ArgumentParser(
+        description="Run the vLLM Router. Configuration is loaded from environment variables only."
     )
 
-    # Basic server settings (can be overridden by config file)
+    # Basic server settings (override environment variables)
     server_group = parser.add_argument_group(
-        "Server Settings", "Basic server configuration"
+        "Server Settings", "Basic server configuration (overrides environment variables)"
     )
     server_group.add_argument(
         "--host", type=str, default="0.0.0.0", help="The host to run the server on."
@@ -223,50 +182,26 @@ def parse_args():
 
     args = parser.parse_args()
 
-    # Load configuration from environment variables or YAML file
-    if env_config_enabled and not args.config:
-        logger.info("Loading configuration from environment variables")
-        config = DynamicRouterConfig.from_env()
-        # Override config with command line arguments if provided
-        if args.host != "0.0.0.0":
-            config.host = args.host
-        if args.port != 8001:
-            config.port = args.port
-        if args.log_level != "info":
-            config.log_level = args.log_level
-        if args.routing_logic:
-            config.routing_logic = args.routing_logic
-        if args.session_key:
-            config.session_key = args.session_key
-        if args.callbacks:
-            config.callbacks = args.callbacks
+    # Load configuration from environment variables
+    logger.info("Loading configuration from environment variables")
+    config = DynamicRouterConfig.from_env()
 
-        # Store the config object for use by the application
-        args.config_obj = config
-    elif args.config:
-        logger.info(f"Loading configuration from YAML file: {args.config}")
-        config = DynamicRouterConfig.from_yaml(args.config)
-        # Override config with command line arguments if provided
-        if args.host != "0.0.0.0":
-            config.host = args.host
-        if args.port != 8001:
-            config.port = args.port
-        if args.log_level != "info":
-            config.log_level = args.log_level
-        if args.routing_logic:
-            config.routing_logic = args.routing_logic
-        if args.session_key:
-            config.session_key = args.session_key
-        if args.callbacks:
-            config.callbacks = args.callbacks
+    # Override config with command line arguments if provided
+    if args.host != "0.0.0.0":
+        config.host = args.host
+    if args.port != 8001:
+        config.port = args.port
+    if args.log_level != "info":
+        config.log_level = args.log_level
+    if args.routing_logic:
+        config.routing_logic = args.routing_logic
+    if args.session_key:
+        config.session_key = args.session_key
+    if args.callbacks:
+        config.callbacks = args.callbacks
 
-        # Store the config object for use by the application
-        args.config_obj = config
-    else:
-        logger.error(
-            "No configuration source available. Either set ROUTER_ENV_CONFIG=true or provide --config"
-        )
-        sys.exit(1)
+    # Store the config object for use by the application
+    args.config_obj = config
 
     validate_args(args)
     return args

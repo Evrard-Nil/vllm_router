@@ -36,7 +36,6 @@ from quote.quote import (
 from cache.cache import set_chat, get_chat
 from middleware.user_auth import require_user_token
 
-from dynamic_config import get_dynamic_config_watcher
 from log import init_logger
 from protocols import ModelCard, ModelList
 from service_discovery import get_service_discovery
@@ -340,17 +339,7 @@ async def health() -> Response:
             content={"status": "Engine stats scraper is down."}, status_code=503
         )
 
-    if get_dynamic_config_watcher() is not None:
-        dynamic_config = get_dynamic_config_watcher().get_current_config()
-        return JSONResponse(
-            content={
-                "status": "healthy",
-                "dynamic_config": json.loads(dynamic_config.to_json_str()),
-            },
-            status_code=200,
-        )
-    else:
-        return JSONResponse(content={"status": "healthy"}, status_code=200)
+    return JSONResponse(content={"status": "healthy"}, status_code=200)
 
 
 @main_router.post("/v1/audio/transcriptions")

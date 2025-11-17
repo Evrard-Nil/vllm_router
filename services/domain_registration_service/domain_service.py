@@ -5,8 +5,8 @@ Coordinates certificate management, DNS operations, and TLS attestation.
 
 import asyncio
 import logging
-from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+from datetime import datetime
 
 from domain_registration.env_config import DomainRegistrationConfig
 from domain_registration.cert_manager import CertificateManager

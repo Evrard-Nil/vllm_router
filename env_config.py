@@ -260,8 +260,3 @@ def load_config_from_env() -> RouterConfig:
     config.log_configuration()
 
     return config
-
-
-def is_env_config_enabled() -> bool:
-    """Check if environment-based configuration is enabled."""
-    return os.getenv("ROUTER_ENV_CONFIG", "true").lower() == "true"

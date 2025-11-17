@@ -13,6 +13,7 @@
 # limitations under the License.
 import asyncio
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -21,14 +22,9 @@ import uvicorn
 from fastapi import FastAPI
 
 from aiohttp_client import AiohttpClientWrapper
-from dynamic_config import (
-    DynamicRouterConfig,
-    get_dynamic_config_watcher,
-    initialize_dynamic_config_watcher,
-)
+from dynamic_config import DynamicRouterConfig
 from experimental import get_feature_gates, initialize_feature_gates
 from parsers.parser import parse_args
-from env_config import is_env_config_enabled
 from routers.batches_router import batches_router
 from routers.files_router import files_router
 from routers.main_router import main_router
@@ -131,12 +127,6 @@ async def lifespan(app: FastAPI):
     service_discovery = get_service_discovery()
     service_discovery.close()
 
-    # Close the optional dynamic config watcher
-    dyn_cfg_watcher = get_dynamic_config_watcher()
-    if dyn_cfg_watcher is not None:
-        logger.info("Closing dynamic config watcher")
-        dyn_cfg_watcher.close()
-
 
 def initialize_all(app: FastAPI, args):
     """
@@ -180,11 +170,9 @@ def initialize_all(app: FastAPI, args):
         configure_custom_callbacks(config.callbacks, app)
 
     # Handle feature gates from environment variables or args
+    import os
     feature_gates_str = getattr(args, "feature_gates", "")
-    if is_env_config_enabled():
-        import os
-
-        feature_gates_str = feature_gates_str or os.getenv("FEATURE_GATES", "")
+    feature_gates_str = feature_gates_str or os.getenv("FEATURE_GATES", "")
 
     initialize_feature_gates(feature_gates_str)
 
@@ -206,18 +194,15 @@ def initialize_all(app: FastAPI, args):
             semantic_cache_dir = getattr(args, "semantic_cache_dir", None)
             semantic_cache_threshold = getattr(args, "semantic_cache_threshold", 0.8)
 
-            if is_env_config_enabled():
-                import os
-
-                semantic_cache_model = semantic_cache_model or os.getenv(
-                    "SEMANTIC_CACHE_MODEL"
-                )
-                semantic_cache_dir = semantic_cache_dir or os.getenv(
-                    "SEMANTIC_CACHE_DIR"
-                )
-                semantic_cache_threshold = float(
-                    os.getenv("SEMANTIC_CACHE_THRESHOLD", str(semantic_cache_threshold))
-                )
+            semantic_cache_model = semantic_cache_model or os.getenv(
+                "SEMANTIC_CACHE_MODEL"
+            )
+            semantic_cache_dir = semantic_cache_dir or os.getenv(
+                "SEMANTIC_CACHE_DIR"
+            )
+            semantic_cache_threshold = float(
+                os.getenv("SEMANTIC_CACHE_THRESHOLD", str(semantic_cache_threshold))
+            )
 
             # Initialize the semantic cache with the model if specified
             if semantic_cache_model:
@@ -253,9 +238,7 @@ def initialize_all(app: FastAPI, args):
                     "The semantic cache will not be functional without an embedding model. "
                     "Set SEMANTIC_CACHE_MODEL environment variable or use --semantic-cache-model."
                 )
-        elif getattr(args, "semantic_cache_model", None) or (
-            is_env_config_enabled() and os.getenv("SEMANTIC_CACHE_MODEL")
-        ):
+        elif getattr(args, "semantic_cache_model", None) or os.getenv("SEMANTIC_CACHE_MODEL"):
             logger.warning(
                 "Semantic cache model specified but SemanticCache feature gate is not enabled. "
                 "Enable the feature gate with FEATURE_GATES=SemanticCache=true"
@@ -302,22 +285,15 @@ def main():
 
     # Handle log stats from environment variables or args
     log_stats_enabled = getattr(args, "log_stats", False)
-    if is_env_config_enabled():
-        # If using env config, check if log_stats was set via environment
-        import os
-
-        log_stats_enabled = (
-            log_stats_enabled or os.getenv("LOG_STATS", "false").lower() == "true"
-        )
+    log_stats_enabled = (
+        log_stats_enabled or os.getenv("LOG_STATS", "false").lower() == "true"
+    )
 
     if log_stats_enabled:
         log_stats_interval = getattr(args, "log_stats_interval", 10)
-        if is_env_config_enabled():
-            import os
-
-            log_stats_interval = int(
-                os.getenv("LOG_STATS_INTERVAL", str(log_stats_interval))
-            )
+        log_stats_interval = int(
+            os.getenv("LOG_STATS_INTERVAL", str(log_stats_interval))
+        )
 
         threading.Thread(
             target=log_stats,

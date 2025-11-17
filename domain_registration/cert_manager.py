@@ -233,7 +233,7 @@ class CertificateManager:
         ]
 
         try:
-            logger.info(f"Running certbot renew command...")
+            logger.info("Running certbot renew command...")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
             if result.returncode == 0:
