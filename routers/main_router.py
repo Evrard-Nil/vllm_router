@@ -187,52 +187,52 @@ async def route_completion(
 
 
 @main_router.post("/v1/embeddings")
-async def route_embeddings(request: Request, background_tasks: BackgroundTasks):
+async def route_embeddings(request: Request, background_tasks: BackgroundTasks, _auth: None = Depends(require_user_token())):
     return await route_general_request(request, "/v1/embeddings", background_tasks)
 
 
 @main_router.post("/tokenize")
-async def route_tokenize(request: Request, background_tasks: BackgroundTasks):
+async def route_tokenize(request: Request, background_tasks: BackgroundTasks, _auth: None = Depends(require_user_token())):
     return await route_general_request(request, "/tokenize", background_tasks)
 
 
 @main_router.post("/detokenize")
-async def route_detokenize(request: Request, background_tasks: BackgroundTasks):
+async def route_detokenize(request: Request, background_tasks: BackgroundTasks, _auth: None = Depends(require_user_token())):
     return await route_general_request(request, "/detokenize", background_tasks)
 
 
 @main_router.post("/v1/rerank")
-async def route_v1_rerank(request: Request, background_tasks: BackgroundTasks):
+async def route_v1_rerank(request: Request, background_tasks: BackgroundTasks, _auth: None = Depends(require_user_token())):
     return await route_general_request(request, "/v1/rerank", background_tasks)
 
 
 @main_router.post("/rerank")
-async def route_rerank(request: Request, background_tasks: BackgroundTasks):
+async def route_rerank(request: Request, background_tasks: BackgroundTasks, _auth: None = Depends(require_user_token())):
     return await route_general_request(request, "/rerank", background_tasks)
 
 
 @main_router.post("/v1/score")
-async def route_v1_score(request: Request, background_tasks: BackgroundTasks):
+async def route_v1_score(request: Request, background_tasks: BackgroundTasks, _auth: None = Depends(require_user_token())):
     return await route_general_request(request, "/v1/score", background_tasks)
 
 
 @main_router.post("/score")
-async def route_score(request: Request, background_tasks: BackgroundTasks):
+async def route_score(request: Request, background_tasks: BackgroundTasks, _auth: None = Depends(require_user_token())):
     return await route_general_request(request, "/score", background_tasks)
 
 
 @main_router.post("/sleep")
-async def route_sleep(request: Request, background_tasks: BackgroundTasks):
+async def route_sleep(request: Request, background_tasks: BackgroundTasks, _auth: None = Depends(require_user_token())):
     return await route_sleep_wakeup_request(request, "/sleep", background_tasks)
 
 
 @main_router.post("/wake_up")
-async def route_wake_up(request: Request, background_tasks: BackgroundTasks):
+async def route_wake_up(request: Request, background_tasks: BackgroundTasks, _auth: None = Depends(require_user_token())):
     return await route_sleep_wakeup_request(request, "/wake_up", background_tasks)
 
 
 @main_router.get("/is_sleeping")
-async def route_is_sleeping(request: Request, background_tasks: BackgroundTasks):
+async def route_is_sleeping(request: Request, background_tasks: BackgroundTasks, _auth: None = Depends(require_user_token())):
     return await route_sleep_wakeup_request(request, "/is_sleeping", background_tasks)
 
 
@@ -355,7 +355,7 @@ async def health() -> Response:
 
 @main_router.post("/v1/audio/transcriptions")
 async def route_v1_audio_transcriptions(
-    request: Request, background_tasks: BackgroundTasks
+    request: Request, background_tasks: BackgroundTasks, _auth: None = Depends(require_user_token())
 ):
     """Handles audio transcription requests."""
     return await route_general_transcriptions(
@@ -365,7 +365,7 @@ async def route_v1_audio_transcriptions(
 
 @main_router.get("/v1/signature/{chat_id}")
 async def get_signature(
-    request: Request, chat_id: str, signing_algo: Optional[str] = None
+    request: Request, chat_id: str, signing_algo: Optional[str] = None, _auth: None = Depends(require_user_token())
 ):
     """
     Get signature for chat_id of chat history.
@@ -419,6 +419,7 @@ async def attestation_report(
     signing_algo: str | None = None,
     nonce: str | None = Query(None),
     signing_address: str | None = Query(None),
+    _auth: None = Depends(require_user_token()),
 ):
     """
     Get attestation report of intel quote and nvidia payload.

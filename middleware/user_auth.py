@@ -3,6 +3,7 @@ Simple user authentication middleware for protecting user routes.
 """
 
 import os
+import secrets
 from typing import Optional
 from fastapi import HTTPException, Header
 from log import init_logger
@@ -32,12 +33,24 @@ def verify_user_token(
     """
     user_token = get_user_token()
 
-    # If no user token is configured, allow access (for development/testing)
+    # Check if authentication should be required (production mode)
+    require_auth = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
+
+    # If no user token is configured
     if not user_token:
-        logger.warning(
-            "No USER_TOKEN configured - user routes are accessible without authentication"
-        )
-        return
+        if require_auth:
+            logger.error(
+                "No USER_TOKEN configured but REQUIRE_AUTH=true - user routes are inaccessible"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication not configured. Please configure USER_TOKEN.",
+            )
+        else:
+            logger.warning(
+                "No USER_TOKEN configured - user routes are accessible without authentication"
+            )
+            return
 
     # Check if Authorization header is present
     if not authorization:
@@ -60,8 +73,8 @@ def verify_user_token(
 
     token = parts[1]
 
-    # Verify token matches
-    if token != user_token:
+    # Verify token matches using timing-safe comparison
+    if not secrets.compare_digest(token, user_token):
         logger.warning("User access denied: Invalid token provided")
         raise HTTPException(
             status_code=403,

@@ -11,9 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from fastapi import APIRouter, Request, UploadFile
+from fastapi import APIRouter, Depends, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
+from middleware.user_auth import require_user_token
 from services.files_service import Storage
 
 files_router = APIRouter()
@@ -21,7 +22,7 @@ files_router = APIRouter()
 
 # --- File Endpoints ---
 @files_router.post("/v1/files")
-async def route_files(request: Request):
+async def route_files(request: Request, _auth: None = Depends(require_user_token())):
     """
     Handle file upload requests and save the files to the configured storage.
 
@@ -56,7 +57,7 @@ async def route_files(request: Request):
 
 
 @files_router.get("/v1/files/{file_id}")
-async def route_get_file(request: Request, file_id: str):
+async def route_get_file(request: Request, file_id: str, _auth: None = Depends(require_user_token())):
     try:
         storage: Storage = request.app.state.batch_storage
         file = await storage.get_file(file_id)
@@ -68,7 +69,7 @@ async def route_get_file(request: Request, file_id: str):
 
 
 @files_router.get("/v1/files/{file_id}/content")
-async def route_get_file_content(request: Request, file_id: str):
+async def route_get_file_content(request: Request, file_id: str, _auth: None = Depends(require_user_token())):
     try:
         # TODO(gaocegege): Stream the file content with chunks to support
         # openai uploads interface.

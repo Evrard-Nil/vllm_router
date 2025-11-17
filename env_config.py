@@ -240,6 +240,8 @@ class RouterConfig:
             )
         if self.admin_token:
             logger.info("  Admin Token: Configured")
+        if self.user_token:
+            logger.info("  User Token: Configured")
 
 
 def load_config_from_env() -> RouterConfig:

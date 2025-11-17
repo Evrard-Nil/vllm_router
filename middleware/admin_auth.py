@@ -3,6 +3,7 @@ Admin authentication middleware for protecting sensitive routes.
 """
 
 import os
+import secrets
 from typing import Optional
 from fastapi import HTTPException, Header, Request
 from log import init_logger
@@ -32,12 +33,24 @@ def verify_admin_token(
     """
     admin_token = get_admin_token()
 
-    # If no admin token is configured, allow access (for development/testing)
+    # Check if authentication should be required (production mode)
+    require_auth = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
+
+    # If no admin token is configured
     if not admin_token:
-        logger.warning(
-            "No ADMIN_TOKEN configured - admin routes are accessible without authentication"
-        )
-        return
+        if require_auth:
+            logger.error(
+                "No ADMIN_TOKEN configured but REQUIRE_AUTH=true - admin routes are inaccessible"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication not configured. Please configure ADMIN_TOKEN.",
+            )
+        else:
+            logger.warning(
+                "No ADMIN_TOKEN configured - admin routes are accessible without authentication"
+            )
+            return
 
     # Check if Authorization header is present
     if not authorization:
@@ -60,8 +73,8 @@ def verify_admin_token(
 
     token = parts[1]
 
-    # Verify token matches
-    if token != admin_token:
+    # Verify token matches using timing-safe comparison
+    if not secrets.compare_digest(token, admin_token):
         logger.warning("Admin access denied: Invalid token provided")
         raise HTTPException(
             status_code=403,
@@ -96,12 +109,24 @@ async def verify_admin_token_request(request: Request):
     """
     admin_token = get_admin_token()
 
-    # If no admin token is configured, allow access
+    # Check if authentication should be required (production mode)
+    require_auth = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
+
+    # If no admin token is configured
     if not admin_token:
-        logger.warning(
-            "No ADMIN_TOKEN configured - admin routes are accessible without authentication"
-        )
-        return
+        if require_auth:
+            logger.error(
+                "No ADMIN_TOKEN configured but REQUIRE_AUTH=true - admin routes are inaccessible"
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication not configured. Please configure ADMIN_TOKEN.",
+            )
+        else:
+            logger.warning(
+                "No ADMIN_TOKEN configured - admin routes are accessible without authentication"
+            )
+            return
 
     # Get Authorization header
     authorization = request.headers.get("Authorization")
@@ -130,8 +155,8 @@ async def verify_admin_token_request(request: Request):
 
     token = parts[1]
 
-    # Verify token matches
-    if token != admin_token:
+    # Verify token matches using timing-safe comparison
+    if not secrets.compare_digest(token, admin_token):
         logger.warning(
             f"Admin access denied to {request.url.path}: Invalid token provided"
         )

@@ -6,9 +6,10 @@ Provides REST API for certificate management and TLS attestation.
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
 
+from middleware.admin_auth import require_admin_token
 from services.domain_registration_service import get_domain_registration_service
 
 logger = logging.getLogger(__name__)
@@ -96,7 +97,7 @@ def get_service_or_404():
 
 
 @router.get("/status", response_model=StatusResponse)
-async def get_status():
+async def get_status(_auth: None = Depends(require_admin_token())):
     """
     Get domain registration status.
 
@@ -115,7 +116,7 @@ async def get_status():
 
 
 @router.post("/renew", response_model=RenewalResponse)
-async def renew_certificates(background_tasks: BackgroundTasks):
+async def renew_certificates(background_tasks: BackgroundTasks, _auth: None = Depends(require_admin_token())):
     """
     Manually renew all certificates.
 
@@ -134,7 +135,7 @@ async def renew_certificates(background_tasks: BackgroundTasks):
 
 
 @router.get("/evidence", response_model=EvidenceResponse)
-async def get_evidence():
+async def get_evidence(_auth: None = Depends(require_admin_token())):
     """
     Get attestation evidence for verification.
 
@@ -161,6 +162,7 @@ async def verify_attestation(
     include_details: bool = Query(
         default=False, description="Include detailed verification information"
     ),
+    _auth: None = Depends(require_admin_token()),
 ):
     """
     Verify attestation evidence.
@@ -179,7 +181,7 @@ async def verify_attestation(
 
 
 @router.post("/attestation/regenerate", response_model=ForceRegenerateResponse)
-async def force_regenerate_evidence(background_tasks: BackgroundTasks):
+async def force_regenerate_evidence(background_tasks: BackgroundTasks, _auth: None = Depends(require_admin_token())):
     """
     Force regeneration of attestation evidence.
 
@@ -197,7 +199,7 @@ async def force_regenerate_evidence(background_tasks: BackgroundTasks):
 
 
 @router.get("/metrics", response_model=MetricsResponse)
-async def get_metrics():
+async def get_metrics(_auth: None = Depends(require_admin_token())):
     """
     Get metrics for monitoring domain registration service.
 
@@ -249,7 +251,7 @@ async def health_check():
 
 
 @router.get("/config")
-async def get_configuration():
+async def get_configuration(_auth: None = Depends(require_admin_token())):
     """
     Get current configuration (non-sensitive data only).
 
@@ -285,7 +287,7 @@ async def get_configuration():
 
 
 @router.get("/certificates")
-async def get_certificate_status():
+async def get_certificate_status(_auth: None = Depends(require_admin_token())):
     """
     Get detailed certificate status for all domains.
 
@@ -344,6 +346,7 @@ async def cleanup_old_evidence(
         le=365,
         description="Maximum age of evidence files to keep (days)",
     ),
+    _auth: None = Depends(require_admin_token()),
 ):
     """
     Clean up old evidence files.

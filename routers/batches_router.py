@@ -11,9 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from middleware.user_auth import require_user_token
 from services.batch_service.processor import BatchProcessor
 from services.files_service import Storage
 
@@ -21,7 +22,7 @@ batches_router = APIRouter()
 
 
 @batches_router.post("/v1/batches")
-async def route_batches(request: Request):
+async def route_batches(request: Request, _auth: None = Depends(require_user_token())):
     """Handle batch requests that process files with specified endpoints."""
     try:
         request_json = await request.json()
@@ -67,7 +68,7 @@ async def route_batches(request: Request):
 
 
 @batches_router.get("/v1/batches/{batch_id}")
-async def route_get_batch(request: Request, batch_id: str):
+async def route_get_batch(request: Request, batch_id: str, _auth: None = Depends(require_user_token())):
     try:
         batch_processor: BatchProcessor = request.app.state.batch_processor
         batch = await batch_processor.retrieve_batch(batch_id)
@@ -79,7 +80,7 @@ async def route_get_batch(request: Request, batch_id: str):
 
 
 @batches_router.get("/v1/batches")
-async def route_list_batches(request: Request, limit: int = 20, after: str = None):
+async def route_list_batches(request: Request, limit: int = 20, after: str = None, _auth: None = Depends(require_user_token())):
     try:
         batch_processor: BatchProcessor = request.app.state.batch_processor
         batches = await batch_processor.list_batches(limit=limit, after=after)
@@ -102,7 +103,7 @@ async def route_list_batches(request: Request, limit: int = 20, after: str = Non
 
 
 @batches_router.delete("/v1/batches/{batch_id}")
-async def route_cancel_batch(request: Request, batch_id: str):
+async def route_cancel_batch(request: Request, batch_id: str, _auth: None = Depends(require_user_token())):
     try:
         batch_processor: BatchProcessor = request.app.state.batch_processor
         batch = await batch_processor.cancel_batch(batch_id)
